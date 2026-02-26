@@ -1,0 +1,29 @@
+# VeriDoc — Local Development Services
+#
+# Start services:
+#   docker compose up -d
+#
+# Start the FastAPI backend (in another terminal):
+#   cd backend && uvicorn app.main:app --reload
+#
+# Start the Celery worker (in another terminal):
+#   cd backend && celery -A app.pipeline.tasks:app worker --loglevel=info
+#
+# Start the frontend dev server (in another terminal):
+#   cd frontend && npm run dev
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis-data:

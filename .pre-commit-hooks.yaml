@@ -1,0 +1,6 @@
+- id: veridoc
+  name: VeriDoc BCV Detection
+  entry: veridoc-check
+  language: python
+  types: [python]
+  stages: [commit]
