@@ -5,7 +5,7 @@
  */
 
 import axios from "axios";
-import type { Analysis, Claim, ViolationReport } from "@/types";
+import type { Analysis, Claim, ViolationReport, BatchResult, DocumentationTree, FileWithPath, LLMProvider } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Axios instance — all requests go through the /api prefix.
@@ -50,6 +50,42 @@ export const analysisApi = {
 
   /** Delete an analysis and all associated data. */
   delete: (id: string) => api.delete(`/analyses/${id}`),
+
+  /** Create a batch analysis from a ZIP file. */
+  createBatch: (data: FormData) =>
+    api.post<{ batch_id: string; analysis_ids: string[]; total: number }>(
+      "/analyses/batch",
+      data,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    ),
+
+  /**
+   * Create a batch analysis from folder-selected files.
+   *
+   * Bundles an array of FileWithPath objects into multipart FormData
+   * and submits to the batch endpoint.
+   *
+   * Requirements: 7.8, 8.1
+   */
+  createBatchFromFolder: (files: FileWithPath[], llmProvider: LLMProvider) => {
+    const formData = new FormData();
+    formData.append("llm_provider", llmProvider);
+    for (const fwp of files) {
+      formData.append("files", fwp.file, fwp.relativePath);
+    }
+    return api.post<{ batch_id: string; analysis_ids: string[]; total: number }>(
+      "/analyses/batch",
+      formData,
+      { headers: { "Content-Type": "multipart/form-data" } }
+    );
+  },
+
+  /** Get batch status — all analyses in a batch. */
+  getBatch: (batchId: string) => api.get<BatchResult>(`/batches/${batchId}`),
+
+  /** Get the documentation tree for a completed analysis. */
+  getDocumentation: (id: string) =>
+    api.get<DocumentationTree>(`/analyses/${id}/documentation`),
 };
 
 export default api;

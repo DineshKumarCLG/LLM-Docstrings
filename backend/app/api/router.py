@@ -15,16 +15,23 @@ import io
 import json
 import re
 import time
+import uuid
+import zipfile
 from collections import defaultdict
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 
+from app.api.documentation import build_documentation_tree
 from app.config import settings
 from app.database import get_db
 from app.models import Analysis, Claim, FunctionRecord, Violation
+from app.pipeline.language_detector import LanguageDetector
+from app.pipeline.parsers import UnsupportedLanguageError
+from app.pipeline.parsers.registry import ParserRegistry
 from app.schemas import AnalysisStatus, LLMProvider
 
 router = APIRouter(prefix="/api")
@@ -167,8 +174,28 @@ async def create_analysis(
             detail={"error": "Provide either a file upload or source_code"},
         )
 
-    # Validate Python syntax (Requirements 1.1, 1.2, 1.3)
-    _validate_python(code)
+    # Detect language from filename (Requirements 1.1, 1.2, 10.1)
+    if filename:
+        language = LanguageDetector.detect(filename, code).value
+    else:
+        # Code paste without filename — default to Python (Requirement 10.1)
+        language = "python"
+
+    # Validate syntax using language-specific parser (Requirements 1.1, 1.2, 10.2, 10.3)
+    try:
+        parser = ParserRegistry.get(language)
+        is_valid, error_message = parser.validate_syntax(code)
+        if not is_valid:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": f"Invalid {language} syntax",
+                    "message": error_message or "Syntax error",
+                },
+            )
+    except UnsupportedLanguageError:
+        # Fallback to Python validation for backward compatibility
+        _validate_python(code)
 
     # Sanitize for safe frontend rendering (Requirement 11.3)
     code = sanitize_source(code)
@@ -179,6 +206,7 @@ async def create_analysis(
         source_code=code,
         llm_provider=llm_provider.value,
         status=AnalysisStatus.PENDING.value,
+        language=language,
     )
     db.add(analysis)
     db.commit()
@@ -209,6 +237,256 @@ async def create_analysis(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/analyses/batch — Analyse a whole project ZIP
+# ---------------------------------------------------------------------------
+
+_MAX_BATCH_SIZE = 20 * 1024 * 1024   # 20 MB total batch size
+_MAX_FILES_PER_BATCH = 50            # guard against huge repos
+
+# Supported source file extensions for batch extraction
+_SUPPORTED_EXTENSIONS = set(LanguageDetector.supported_extensions())
+
+
+def _is_supported_source_file(filename: str) -> bool:
+    """Return True if *filename* has a supported source extension."""
+    _, ext = os.path.splitext(filename)
+    return ext.lower() in _SUPPORTED_EXTENSIONS
+
+
+@router.post("/analyses/batch", status_code=202)
+async def create_batch_analysis(
+    request: Request,
+    file: Optional[UploadFile] = File(None),
+    files: Optional[list[UploadFile]] = File(None),
+    llm_provider: LLMProvider = Form(LLMProvider.GEMINI_FLASH),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Accept a ZIP archive or multipart FormData with multiple files.
+
+    Detects language per file, validates syntax using the appropriate
+    LanguageParser, creates Analysis records with the correct ``language``
+    field, and enqueues pipeline tasks with language routing.
+
+    Files that fail syntax validation are skipped and reported in an
+    ``errors`` array.  Enforces max 50 files and 20 MB total size.
+
+    Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    if not _analysis_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail={"error": "Too many requests."})
+
+    # Collect (filename, code_bytes) pairs from either ZIP or multipart files
+    file_entries: list[tuple[str, bytes]] = []
+
+    if file is not None and file.filename and file.filename.lower().endswith(".zip"):
+        # ---- ZIP upload path (backward compatible) ----
+        raw = await file.read()
+        if len(raw) > _MAX_BATCH_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail={"error": f"ZIP too large (max {_MAX_BATCH_SIZE // 1024 // 1024} MB)"},
+            )
+
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile:
+            raise HTTPException(
+                status_code=400, detail={"error": "Invalid or corrupt ZIP file"}
+            )
+
+        # Collect all supported source files (skip __pycache__, hidden dirs)
+        members = [
+            m for m in zf.infolist()
+            if _is_supported_source_file(m.filename)
+            and not m.filename.startswith("__")
+            and "/__pycache__/" not in m.filename
+            and not m.is_dir()
+        ]
+
+        if not members:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "No supported source files found in ZIP"},
+            )
+
+        if len(members) > _MAX_FILES_PER_BATCH:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Too many files (max {_MAX_FILES_PER_BATCH} files per batch)"
+                },
+            )
+
+        for member in members:
+            try:
+                code_bytes = zf.read(member.filename)
+                file_entries.append((member.filename, code_bytes))
+            except Exception:
+                continue  # skip unreadable files
+
+    elif files is not None and len(files) > 0:
+        # ---- Multipart FormData with multiple files ----
+        if len(files) > _MAX_FILES_PER_BATCH:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"Too many files (max {_MAX_FILES_PER_BATCH} files per batch)"
+                },
+            )
+
+        total_size = 0
+        for upload in files:
+            raw = await upload.read()
+            total_size += len(raw)
+            if total_size > _MAX_BATCH_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "error": f"Total size exceeds limit (max {_MAX_BATCH_SIZE // 1024 // 1024} MB)"
+                    },
+                )
+            fname = upload.filename or "unknown.py"
+            file_entries.append((fname, raw))
+
+    elif file is not None:
+        # Single non-ZIP file uploaded via the `file` param — reject
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "Only .zip files or multiple files (via 'files') are accepted"},
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "Provide a ZIP file or multiple files via multipart FormData"},
+        )
+
+    if not file_entries:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "No files could be read from the upload"},
+        )
+
+    batch_id = str(uuid.uuid4())
+    analysis_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    from app.pipeline.tasks import run_pipeline
+
+    for fname, code_bytes in file_entries:
+        try:
+            code = code_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            errors.append({"filename": fname, "error": "Unable to decode file"})
+            continue
+
+        # Detect language (Requirement 8.2)
+        language = LanguageDetector.detect(fname, code).value
+
+        # Validate syntax using language-specific parser (Requirement 8.3)
+        try:
+            parser = ParserRegistry.get(language)
+            is_valid, error_message = parser.validate_syntax(code)
+            if not is_valid:
+                errors.append({
+                    "filename": fname,
+                    "error": error_message or f"Invalid {language} syntax",
+                })
+                continue
+        except UnsupportedLanguageError:
+            # Fallback to Python validation for backward compatibility
+            try:
+                ast.parse(code)
+            except SyntaxError as exc:
+                errors.append({
+                    "filename": fname,
+                    "error": f"Syntax error: {exc.msg}" if exc.msg else "Syntax error",
+                })
+                continue
+
+        code = sanitize_source(code)
+
+        # Create Analysis record with language field (Requirement 8.4)
+        analysis = Analysis(
+            filename=fname,
+            source_code=code,
+            llm_provider=llm_provider.value,
+            status=AnalysisStatus.PENDING.value,
+            config={"batch_id": batch_id},
+            language=language,
+        )
+        db.add(analysis)
+        db.commit()
+        db.refresh(analysis)
+
+        # Enqueue pipeline task with language routing (Requirement 8.5)
+        try:
+            run_pipeline.delay(
+                analysis_id=analysis.id,
+                source_code=code,
+                llm_provider=llm_provider.value,
+            )
+            analysis_ids.append(analysis.id)
+        except Exception:
+            analysis.status = AnalysisStatus.FAILED.value
+            db.commit()
+
+    if not analysis_ids and not errors:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "No valid source files could be processed"},
+        )
+
+    if not analysis_ids:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "No valid source files could be processed",
+                "errors": errors,
+            },
+        )
+
+    return {
+        "batch_id": batch_id,
+        "analysis_ids": analysis_ids,
+        "total": len(analysis_ids),
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/batches/{batch_id} — Poll all analyses in a batch
+# ---------------------------------------------------------------------------
+
+
+@router.get("/batches/{batch_id}")
+def get_batch(batch_id: str, db: Session = Depends(get_db)) -> dict:
+    """Return summary for every analysis belonging to a batch."""
+    analyses = (
+        db.query(Analysis)
+        .filter(Analysis.config["batch_id"].as_string() == batch_id)
+        .order_by(Analysis.created_at.asc())
+        .all()
+    )
+    if not analyses:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    items = [_analysis_summary(a) for a in analyses]
+    total = len(items)
+    complete = sum(1 for a in analyses if a.status == AnalysisStatus.COMPLETE.value)
+    failed = sum(1 for a in analyses if a.status == AnalysisStatus.FAILED.value)
+
+    return {
+        "batch_id": batch_id,
+        "total": total,
+        "complete": complete,
+        "failed": failed,
+        "in_progress": total - complete - failed,
+        "analyses": items,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helper: build analysis summary dict
 # ---------------------------------------------------------------------------
 
@@ -226,6 +504,7 @@ def _analysis_summary(a: Analysis) -> dict:
         "bcvRate": a.bcv_rate,
         "createdAt": a.created_at.isoformat() if a.created_at else None,
         "completedAt": a.completed_at.isoformat() if a.completed_at else None,
+        "language": a.language,
     }
 
 
@@ -461,6 +740,38 @@ def get_analysis_violations(
         "totalFunctions": analysis.total_functions,
         "totalClaims": analysis.total_claims,
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analyses/{id}/documentation — Documentation tree (Requirements 8.1–8.3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/analyses/{analysis_id}/documentation")
+def get_analysis_documentation(
+    analysis_id: str, db: Session = Depends(get_db)
+) -> dict:
+    """Return the documentation tree for a completed analysis.
+
+    Returns 404 if the analysis does not exist, 409 if the analysis has not
+    yet completed (status != "complete").
+
+    Requirements: 8.1, 8.2, 8.3
+    """
+    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    if analysis.status != AnalysisStatus.COMPLETE.value:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "Analysis not complete",
+                "status": analysis.status,
+            },
+        )
+
+    return build_documentation_tree(analysis.source_code, analysis_id)
 
 
 # ---------------------------------------------------------------------------

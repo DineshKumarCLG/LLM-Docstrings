@@ -311,3 +311,383 @@ class TestCeleryTaskConfig:
 
         backend_url = app.conf.result_backend
         assert backend_url.endswith("/1")
+
+
+# ---------------------------------------------------------------------------
+# Tests for language registry lookups in pipeline orchestrator (Task 7.1)
+# Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+# ---------------------------------------------------------------------------
+
+
+class TestGetAnalysisLanguage:
+    def test_reads_language_from_analysis(self, monkeypatch):
+        """_get_analysis_language returns the language field from the Analysis record."""
+        session = _make_session()
+        aid = str(uuid.uuid4())
+        analysis = Analysis(
+            id=aid,
+            source_code="console.log('hi')",
+            llm_provider="gpt-4.1-mini",
+            status="pending",
+            language="javascript",
+        )
+        session.add(analysis)
+        session.commit()
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        result = tasks_mod._get_analysis_language(aid)
+        assert result == "javascript"
+
+    def test_defaults_to_python_for_missing_analysis(self, monkeypatch):
+        """_get_analysis_language returns 'python' when analysis is not found."""
+        session = _make_session()
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        result = tasks_mod._get_analysis_language("nonexistent-id")
+        assert result == "python"
+
+    def test_reads_default_python_language(self, monkeypatch):
+        """_get_analysis_language returns 'python' for records with default language."""
+        session = _make_session()
+        aid = _create_analysis(session)
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        result = tasks_mod._get_analysis_language(aid)
+        assert result == "python"
+
+
+class TestFailAnalysisWithError:
+    def test_sets_status_to_failed(self, monkeypatch):
+        """_fail_analysis_with_error sets status to FAILED and completed_at."""
+        session = _make_session()
+        aid = _create_analysis(session)
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        tasks_mod._fail_analysis_with_error(aid, "No parser for 'cobol'")
+
+        analysis = session.query(Analysis).filter(Analysis.id == aid).first()
+        assert analysis is not None
+        assert analysis.status == "failed"
+        assert analysis.completed_at is not None
+
+
+class TestRegistryImports:
+    def test_parser_registry_has_all_languages(self):
+        """ParserRegistry has parsers for all six supported languages."""
+        from app.pipeline.parsers.registry import ParserRegistry
+
+        supported = ParserRegistry.supported_languages()
+        for lang in ("python", "javascript", "typescript", "java", "go", "rust"):
+            assert lang in supported, f"Missing parser for {lang}"
+
+    def test_framework_registry_has_all_languages(self):
+        """TestFrameworkRegistry has frameworks for all six supported languages."""
+        from app.pipeline.frameworks.registry import TestFrameworkRegistry
+
+        supported = TestFrameworkRegistry.supported_languages()
+        for lang in ("python", "javascript", "typescript", "java", "go", "rust"):
+            assert lang in supported, f"Missing framework for {lang}"
+
+    def test_runtime_registry_has_all_languages(self):
+        """RuntimeRegistry has runtimes for all six supported languages."""
+        from app.pipeline.runtimes.registry import RuntimeRegistry
+
+        supported = RuntimeRegistry.supported_languages()
+        for lang in ("python", "javascript", "typescript", "java", "go", "rust"):
+            assert lang in supported, f"Missing runtime for {lang}"
+
+    def test_parser_registry_raises_for_unsupported(self):
+        """ParserRegistry raises UnsupportedLanguageError for unknown language."""
+        from app.pipeline.parsers.registry import ParserRegistry
+        from app.pipeline.parsers import UnsupportedLanguageError
+
+        import pytest
+
+        with pytest.raises(UnsupportedLanguageError):
+            ParserRegistry.get("cobol")
+
+    def test_framework_registry_raises_for_unsupported(self):
+        """TestFrameworkRegistry raises UnsupportedFrameworkError for unknown language."""
+        from app.pipeline.frameworks.registry import TestFrameworkRegistry
+        from app.pipeline.frameworks import UnsupportedFrameworkError
+
+        import pytest
+
+        with pytest.raises(UnsupportedFrameworkError):
+            TestFrameworkRegistry.get("cobol")
+
+    def test_runtime_registry_raises_for_unsupported(self):
+        """RuntimeRegistry raises UnsupportedRuntimeError for unknown language."""
+        from app.pipeline.runtimes.registry import RuntimeRegistry
+        from app.pipeline.runtimes import UnsupportedRuntimeError
+
+        import pytest
+
+        with pytest.raises(UnsupportedRuntimeError):
+            RuntimeRegistry.get("cobol")
+
+
+# ---------------------------------------------------------------------------
+# Integration tests for multi-language pipeline routing (Task 7.5)
+# Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineLanguageRouting:
+    """Integration tests verifying run_pipeline routes to correct adapters."""
+
+    def test_python_routes_to_python_adapters(self, monkeypatch):
+        """run_pipeline reads language='python' and passes it to each stage.
+
+        Verifies that run_bce, run_dts, and run_rv all receive
+        language='python' when the Analysis record has language='python'.
+
+        Requirements: 5.1, 5.2, 5.3, 5.4
+        """
+        session = _make_session()
+        aid = _create_analysis(session, status="pending")
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        # Track language arguments passed to each stage
+        captured_languages = {}
+
+        def fake_run_bce(analysis_id, source_code, language=None):
+            captured_languages["bce"] = language
+            return {"claim_schemas": []}
+
+        def fake_run_dts(analysis_id, claim_schemas, llm_provider, language=None):
+            captured_languages["dts"] = language
+            return {"test_suites": []}
+
+        def fake_run_rv(analysis_id, test_suites, source_code, language=None):
+            captured_languages["rv"] = language
+            return {"violation_reports": []}
+
+        monkeypatch.setattr(tasks_mod, "run_bce", fake_run_bce)
+        monkeypatch.setattr(tasks_mod, "run_dts", fake_run_dts)
+        monkeypatch.setattr(tasks_mod, "run_rv", fake_run_rv)
+
+        result = tasks_mod.run_pipeline(
+            aid, "def foo(): pass", "gpt-4.1-mini",
+        )
+
+        assert result["status"] == "complete"
+        assert captured_languages["bce"] == "python"
+        assert captured_languages["dts"] == "python"
+        assert captured_languages["rv"] == "python"
+
+    def test_javascript_routes_to_javascript_adapters(self, monkeypatch):
+        """run_pipeline reads language='javascript' and passes it to each stage.
+
+        Requirements: 5.1, 5.2, 5.3, 5.4
+        """
+        session = _make_session()
+        aid = str(uuid.uuid4())
+        analysis = Analysis(
+            id=aid,
+            source_code="function foo() {}",
+            llm_provider="gpt-4.1-mini",
+            status="pending",
+            language="javascript",
+        )
+        session.add(analysis)
+        session.commit()
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        captured_languages = {}
+
+        def fake_run_bce(analysis_id, source_code, language=None):
+            captured_languages["bce"] = language
+            return {"claim_schemas": []}
+
+        def fake_run_dts(analysis_id, claim_schemas, llm_provider, language=None):
+            captured_languages["dts"] = language
+            return {"test_suites": []}
+
+        def fake_run_rv(analysis_id, test_suites, source_code, language=None):
+            captured_languages["rv"] = language
+            return {"violation_reports": []}
+
+        monkeypatch.setattr(tasks_mod, "run_bce", fake_run_bce)
+        monkeypatch.setattr(tasks_mod, "run_dts", fake_run_dts)
+        monkeypatch.setattr(tasks_mod, "run_rv", fake_run_rv)
+
+        result = tasks_mod.run_pipeline(
+            aid, "function foo() {}", "gpt-4.1-mini",
+        )
+
+        assert result["status"] == "complete"
+        assert captured_languages["bce"] == "javascript"
+        assert captured_languages["dts"] == "javascript"
+        assert captured_languages["rv"] == "javascript"
+
+    def test_unsupported_language_fails_gracefully(self, monkeypatch):
+        """run_pipeline fails with descriptive error for unsupported language.
+
+        When the Analysis record has a language with no registered parser,
+        the pipeline should set status to 'failed' and return an error.
+
+        Requirements: 5.5
+        """
+        session = _make_session()
+        aid = str(uuid.uuid4())
+        analysis = Analysis(
+            id=aid,
+            source_code="COBOL code here",
+            llm_provider="gpt-4.1-mini",
+            status="pending",
+            language="cobol",
+        )
+        session.add(analysis)
+        session.commit()
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        result = tasks_mod.run_pipeline(
+            aid, "COBOL code here", "gpt-4.1-mini",
+        )
+
+        assert result["status"] == "failed"
+        assert "error" in result
+        assert "cobol" in result["error"].lower()
+
+        # Verify the analysis record was updated to failed
+        analysis = session.query(Analysis).filter(Analysis.id == aid).first()
+        assert analysis.status == "failed"
+        assert analysis.completed_at is not None
+
+    def test_pipeline_status_transitions_with_language(self, monkeypatch):
+        """run_pipeline goes through correct status transitions for a routed language.
+
+        Requirements: 5.1, 5.2, 5.3, 5.4
+        """
+        session = _make_session()
+        aid = _create_analysis(session, status="pending")
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        status_history = []
+        original_update = tasks_mod._update_status
+
+        def tracking_update(analysis_id, status):
+            status_history.append(status)
+            original_update(analysis_id, status)
+
+        monkeypatch.setattr(tasks_mod, "_update_status", tracking_update)
+
+        def fake_run_bce(analysis_id, source_code, language=None):
+            return {"claim_schemas": []}
+
+        def fake_run_dts(analysis_id, claim_schemas, llm_provider, language=None):
+            return {"test_suites": []}
+
+        def fake_run_rv(analysis_id, test_suites, source_code, language=None):
+            return {"violation_reports": []}
+
+        monkeypatch.setattr(tasks_mod, "run_bce", fake_run_bce)
+        monkeypatch.setattr(tasks_mod, "run_dts", fake_run_dts)
+        monkeypatch.setattr(tasks_mod, "run_rv", fake_run_rv)
+
+        result = tasks_mod.run_pipeline(
+            aid, "def foo(): pass", "gpt-4.1-mini",
+        )
+
+        assert result["status"] == "complete"
+        assert status_history == [
+            "bce_running",
+            "bce_complete",
+            "dts_running",
+            "dts_complete",
+            "rv_running",
+            "complete",
+        ]
+
+    def test_pipeline_resolves_parser_framework_runtime(self, monkeypatch):
+        """run_pipeline resolves all three registries before calling stages.
+
+        Verifies that ParserRegistry.get, TestFrameworkRegistry.get, and
+        RuntimeRegistry.get are called with the correct language.
+
+        Requirements: 5.2, 5.3, 5.4
+        """
+        session = _make_session()
+        aid = str(uuid.uuid4())
+        analysis = Analysis(
+            id=aid,
+            source_code="package main",
+            llm_provider="gpt-4.1-mini",
+            status="pending",
+            language="go",
+        )
+        session.add(analysis)
+        session.commit()
+
+        import app.pipeline.tasks as tasks_mod
+
+        monkeypatch.setattr(tasks_mod, "SessionLocal", lambda: session)
+
+        registry_calls = []
+
+        original_parser_get = tasks_mod.ParserRegistry.get
+        original_framework_get = tasks_mod.TestFrameworkRegistry.get
+        original_runtime_get = tasks_mod.RuntimeRegistry.get
+
+        def tracking_parser_get(language):
+            registry_calls.append(("parser", language))
+            return original_parser_get(language)
+
+        def tracking_framework_get(language):
+            registry_calls.append(("framework", language))
+            return original_framework_get(language)
+
+        def tracking_runtime_get(language):
+            registry_calls.append(("runtime", language))
+            return original_runtime_get(language)
+
+        monkeypatch.setattr(tasks_mod.ParserRegistry, "get", staticmethod(tracking_parser_get))
+        monkeypatch.setattr(tasks_mod.TestFrameworkRegistry, "get", staticmethod(tracking_framework_get))
+        monkeypatch.setattr(tasks_mod.RuntimeRegistry, "get", staticmethod(tracking_runtime_get))
+
+        def fake_run_bce(analysis_id, source_code, language=None):
+            return {"claim_schemas": []}
+
+        def fake_run_dts(analysis_id, claim_schemas, llm_provider, language=None):
+            return {"test_suites": []}
+
+        def fake_run_rv(analysis_id, test_suites, source_code, language=None):
+            return {"violation_reports": []}
+
+        monkeypatch.setattr(tasks_mod, "run_bce", fake_run_bce)
+        monkeypatch.setattr(tasks_mod, "run_dts", fake_run_dts)
+        monkeypatch.setattr(tasks_mod, "run_rv", fake_run_rv)
+
+        result = tasks_mod.run_pipeline(
+            aid, "package main", "gpt-4.1-mini",
+        )
+
+        assert result["status"] == "complete"
+        assert ("parser", "go") in registry_calls
+        assert ("framework", "go") in registry_calls
+        assert ("runtime", "go") in registry_calls

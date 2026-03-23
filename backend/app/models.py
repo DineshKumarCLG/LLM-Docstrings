@@ -64,6 +64,9 @@ class Analysis(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    language: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="python"
+    )
 
     # Relationships
     functions: Mapped[list[FunctionRecord]] = relationship(

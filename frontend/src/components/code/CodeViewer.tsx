@@ -1,85 +1,36 @@
-/**
- * Code viewer with inline violation annotations.
- *
- * Displays Python source with line numbers, highlights violated lines,
- * shows gutter markers, and provides hover tooltips with claim + violation details.
- *
- * Requirements: 8.7
- */
-
 import { useState, useMemo } from "react";
-import {
-  CATEGORY_COLORS,
-  CATEGORY_LABELS,
-  type Violation,
-} from "@/types";
+import { CATEGORY_COLORS, CATEGORY_LABELS, type Violation } from "@/types";
 
-// ---------------------------------------------------------------------------
-// Props
-// ---------------------------------------------------------------------------
-
-interface CodeViewerProps {
-  sourceCode: string;
-  violations: Violation[];
-}
-
-// ---------------------------------------------------------------------------
-// Build a lookup: line number → violations on that line
-// ---------------------------------------------------------------------------
+interface CodeViewerProps { sourceCode: string; violations: Violation[]; }
 
 function buildLineViolationMap(violations: Violation[]) {
   const map = new Map<number, Violation[]>();
   for (const v of violations) {
     if (v.claim.sourceLine > 0) {
-      const line = v.claim.sourceLine;
-      const list = map.get(line) ?? [];
+      const list = map.get(v.claim.sourceLine) ?? [];
       list.push(v);
-      map.set(line, list);
+      map.set(v.claim.sourceLine, list);
     }
   }
   return map;
 }
 
-// ---------------------------------------------------------------------------
-// Tooltip component (positioned absolutely near the hovered line)
-// ---------------------------------------------------------------------------
-
 function ViolationTooltip({ violations }: { violations: Violation[] }) {
   return (
-    <div className="absolute left-full top-0 z-50 ml-2 w-80 rounded-lg border bg-popover p-3 shadow-lg text-popover-foreground">
-      <p className="mb-2 text-xs font-semibold text-muted-foreground">
-        {violations.length} violation{violations.length !== 1 ? "s" : ""} on
-        this line
+    <div className="absolute left-full top-0 z-50 ml-3 w-80 rounded-2xl glass-strong p-3 shadow-2xl shadow-black/40">
+      <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {violations.length} violation{violations.length !== 1 ? "s" : ""} on this line
       </p>
       <div className="space-y-2">
         {violations.map((v, i) => (
-          <div key={i} className="rounded-md border p-2 text-xs">
-            <div className="mb-1 flex items-center gap-2">
-              <span
-                className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                style={{
-                  backgroundColor: CATEGORY_COLORS[v.claim.category],
-                }}
-              >
-                {v.claim.category}
-              </span>
-              <span className="font-medium">
-                {CATEGORY_LABELS[v.claim.category]}
-              </span>
+          <div key={i} className="rounded-xl glass p-2.5 text-xs">
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="inline-flex items-center rounded-lg px-1.5 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: CATEGORY_COLORS[v.claim.category] }}>{v.claim.category}</span>
+              <span className="font-medium text-foreground">{CATEGORY_LABELS[v.claim.category]}</span>
             </div>
             <p className="text-muted-foreground">{v.claim.rawText}</p>
-            {v.expected && (
-              <p className="mt-1">
-                <span className="font-medium">Expected:</span>{" "}
-                <span className="font-mono">{v.expected}</span>
-              </p>
-            )}
-            {v.actual && (
-              <p>
-                <span className="font-medium">Actual:</span>{" "}
-                <span className="font-mono">{v.actual}</span>
-              </p>
-            )}
+            {v.expected && <p className="mt-1 text-xs"><span className="font-medium text-muted-foreground">Expected: </span><span className="font-mono text-foreground">{v.expected}</span></p>}
+            {v.actual && <p className="text-xs"><span className="font-medium text-muted-foreground">Actual: </span><span className="font-mono text-foreground">{v.actual}</span></p>}
           </div>
         ))}
       </div>
@@ -87,77 +38,31 @@ function ViolationTooltip({ violations }: { violations: Violation[] }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
 export default function CodeViewer({ sourceCode, violations }: CodeViewerProps) {
   const [hoveredLine, setHoveredLine] = useState<number | null>(null);
-
   const lines = useMemo(() => sourceCode.split("\n"), [sourceCode]);
-  const lineViolationMap = useMemo(
-    () => buildLineViolationMap(violations),
-    [violations],
-  );
-
+  const lineViolationMap = useMemo(() => buildLineViolationMap(violations), [violations]);
   const gutterWidth = String(lines.length).length;
 
   return (
-    <div className="overflow-x-auto rounded-lg border bg-card">
+    <div className="overflow-x-auto rounded-2xl glass">
       <pre className="text-sm leading-6">
         <code>
           {lines.map((line, idx) => {
             const lineNum = idx + 1;
             const lineViolations = lineViolationMap.get(lineNum);
-
             return (
-              <div
-                key={lineNum}
-                className="relative"
+              <div key={lineNum} className="relative"
                 onMouseEnter={() => lineViolations && setHoveredLine(lineNum)}
-                onMouseLeave={() => setHoveredLine(null)}
-              >
-                <div
-                  className={
-                    lineViolations
-                      ? "flex bg-red-500/10 hover:bg-red-500/20"
-                      : "flex hover:bg-muted/40"
-                  }
-                >
-                  {/* Gutter: line number + marker */}
-                  <span className="sticky left-0 flex shrink-0 select-none items-center gap-1 border-r bg-muted/30 px-2 text-right text-xs text-muted-foreground">
-                    {(() => {
-                      const first = lineViolations?.[0];
-                      if (!first) return null;
-                      return (
-                        <span
-                          className="inline-block h-2 w-2 rounded-full"
-                          style={{
-                            backgroundColor:
-                              CATEGORY_COLORS[first.claim.category],
-                          }}
-                          aria-label={`Violation: ${first.claim.category}`}
-                        />
-                      );
-                    })()}
-                    <span
-                      className="inline-block"
-                      style={{ minWidth: `${gutterWidth}ch` }}
-                    >
-                      {lineNum}
-                    </span>
+                onMouseLeave={() => setHoveredLine(null)}>
+                <div className={lineViolations ? "flex bg-red-500/[0.06] hover:bg-red-500/[0.10]" : "flex hover:bg-foreground/[0.02]"}>
+                  <span className="sticky left-0 flex shrink-0 select-none items-center gap-1.5 border-r border-foreground/[0.06] bg-foreground/[0.02] px-3 text-right text-xs text-muted-foreground/40">
+                    {lineViolations?.[0] && <span className="inline-block h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: CATEGORY_COLORS[lineViolations[0].claim.category] }} aria-label={`Violation: ${lineViolations[0].claim.category}`} />}
+                    <span className="inline-block" style={{ minWidth: `${gutterWidth}ch` }}>{lineNum}</span>
                   </span>
-
-                  {/* Code content */}
-                  <span className="flex-1 whitespace-pre px-4 font-mono">
-                    {line}
-                  </span>
+                  <span className="flex-1 whitespace-pre px-4 font-mono text-foreground/85">{line}</span>
                 </div>
-
-                {/* Tooltip on hover */}
-                {lineViolations && hoveredLine === lineNum && (
-                  <ViolationTooltip violations={lineViolations} />
-                )}
+                {lineViolations && hoveredLine === lineNum && <ViolationTooltip violations={lineViolations} />}
               </div>
             );
           })}

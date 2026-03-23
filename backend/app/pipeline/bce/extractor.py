@@ -16,6 +16,7 @@ import spacy
 
 from app.schemas import BCVCategory, Claim, ClaimSchema, FunctionInfo
 from app.pipeline.bce.patterns import apply_nlp_patterns
+from app.pipeline.parsers import LanguageParser
 
 
 _FuncNode = Union[ast.FunctionDef, ast.AsyncFunctionDef]
@@ -446,11 +447,21 @@ class BehavioralClaimExtractor:
     dependency parse), merge and deduplicate, and return a ``ClaimSchema``
     per function.
 
-    Requirements: 2.1–2.8
+    Accepts an optional ``LanguageParser`` instance.  When provided, the
+    extractor delegates function extraction to ``parser.parse_functions()``
+    instead of the hardcoded Python ``ast`` module.  When *parser* is
+    ``None`` (the default), the existing Python-only behaviour is preserved
+    for backward compatibility.
+
+    The NLP pattern matching (spaCy) remains language-agnostic — it operates
+    on extracted docstrings/comments regardless of source language.
+
+    Requirements: 2.1–2.8, 2.10
     """
 
-    def __init__(self) -> None:
+    def __init__(self, parser: LanguageParser | None = None) -> None:
         self._nlp = spacy.load("en_core_web_sm")
+        self._parser = parser
 
     # -- public API ---------------------------------------------------------
 
@@ -460,7 +471,7 @@ class BehavioralClaimExtractor:
         Parameters
         ----------
         source_code : str
-            Syntactically valid Python source code.
+            Syntactically valid source code (Python or any supported language).
 
         Returns
         -------
@@ -468,7 +479,10 @@ class BehavioralClaimExtractor:
             One ``ClaimSchema`` per function that has a docstring.
             Functions without docstrings are skipped (Requirement 2.7).
         """
-        func_infos = extract_all_function_infos(source_code)
+        if self._parser is not None:
+            func_infos = self._parser.parse_functions(source_code)
+        else:
+            func_infos = extract_all_function_infos(source_code)
         results: list[ClaimSchema] = []
 
         for func_info in func_infos:
@@ -529,22 +543,34 @@ class BehavioralClaimExtractor:
         return claims
 
     def _nlp_track(self, func_info: FunctionInfo) -> list[Claim]:
-        """Apply NLP patterns over the function's docstring."""
+        """Apply NLP patterns over the function's docstring.
+
+        The NLP track is language-agnostic — it operates on extracted
+        docstrings/comments regardless of source language (Requirement 2.10).
+        """
         if not func_info.docstring:
             return []
 
         # Compute the source line where the docstring text starts.
-        # We re-parse to get the AST node for accurate line info.
-        tree = ast.parse(func_info.source)
+        # For Python source (no parser or Python parser), re-parse with ast
+        # for accurate line info.  For other languages, use a simple fallback.
         docstring_start_line = func_info.lineno + 1  # default fallback
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                docstring_start_line = (
-                    func_info.lineno
-                    + _get_docstring_start_line(node)
-                    - node.lineno
-                )
-                break
+
+        if self._parser is None or (
+            self._parser is not None and self._parser.get_language() == "python"
+        ):
+            try:
+                tree = ast.parse(func_info.source)
+                for node in ast.iter_child_nodes(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        docstring_start_line = (
+                            func_info.lineno
+                            + _get_docstring_start_line(node)
+                            - node.lineno
+                        )
+                        break
+            except SyntaxError:
+                pass  # keep the default fallback
 
         return apply_nlp_patterns(
             func_info.docstring,

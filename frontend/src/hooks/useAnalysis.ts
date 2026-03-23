@@ -10,7 +10,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { analysisApi } from "@/api/client";
-import type { Analysis, Claim, ViolationReport } from "@/types";
+import type { Analysis, Claim, ViolationReport, BatchResult, DocumentationTree, FileWithPath, LLMProvider } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Query key factory — keeps cache keys consistent across hooks.
@@ -22,6 +22,8 @@ export const analysisKeys = {
   detail: (id: string) => [...analysisKeys.all, "detail", id] as const,
   violations: (id: string) => [...analysisKeys.all, "violations", id] as const,
   claims: (id: string) => [...analysisKeys.all, "claims", id] as const,
+  documentation: (id: string) => [...analysisKeys.all, "documentation", id] as const,
+  batch: (batchId: string) => ["batches", batchId] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,25 @@ export function useClaims(id: string) {
 }
 
 /**
+ * Fetch the documentation tree for a completed analysis.
+ *
+ * Only enabled when the analysis status is "complete" — the backend
+ * returns 409 for incomplete analyses, so we gate the request here.
+ *
+ * Requirements: 7.1, 7.5, 8.1
+ */
+export function useDocumentation(id: string, status?: string) {
+  return useQuery<DocumentationTree>({
+    queryKey: analysisKeys.documentation(id),
+    queryFn: async () => {
+      const { data } = await analysisApi.getDocumentation(id);
+      return data;
+    },
+    enabled: !!id && status === "complete",
+  });
+}
+
+/**
  * Mutation to create a new analysis.
  *
  * Invalidates the analysis list cache on success so the dashboard
@@ -106,6 +127,57 @@ export function useCreateAnalysis() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: analysisKeys.lists() });
+    },
+  });
+}
+
+/** Mutation to create a batch analysis from a ZIP file. */
+export function useCreateBatchAnalysis() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (formData: FormData) => {
+      const { data } = await analysisApi.createBatch(formData);
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: analysisKeys.lists() });
+    },
+  });
+}
+
+/**
+ * Mutation to create a batch analysis from folder-selected files.
+ *
+ * Requirements: 7.8, 8.1
+ */
+export function useCreateBatchFromFolder() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ files, llmProvider }: { files: FileWithPath[]; llmProvider: LLMProvider }) => {
+      const { data } = await analysisApi.createBatchFromFolder(files, llmProvider);
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: analysisKeys.lists() });
+    },
+  });
+}
+
+/** Poll a batch until all analyses are complete or failed. */
+export function useBatch(batchId: string | null) {
+  return useQuery<BatchResult>({
+    queryKey: analysisKeys.batch(batchId ?? ""),
+    queryFn: async () => {
+      const { data } = await analysisApi.getBatch(batchId!);
+      return data;
+    },
+    enabled: !!batchId,
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (!d) return 2000;
+      return d.in_progress > 0 ? 2000 : false;
     },
   });
 }

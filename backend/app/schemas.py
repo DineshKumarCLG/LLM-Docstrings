@@ -55,6 +55,17 @@ class AnalysisStatus(str, Enum):
     FAILED = "failed"
 
 
+class SupportedLanguage(str, Enum):
+    """Supported programming languages for multi-language analysis."""
+
+    PYTHON = "python"
+    JAVASCRIPT = "javascript"
+    TYPESCRIPT = "typescript"
+    JAVA = "java"
+    GO = "go"
+    RUST = "rust"
+
+
 class TestOutcome(str, Enum):
     """Outcome classification for a single synthesized test execution."""
 
@@ -166,6 +177,7 @@ class AnalysisCreate(BaseModel):
     source_code: Optional[str] = None
     llm_provider: LLMProvider = LLMProvider.GEMINI_FLASH
     generate_docstrings: bool = False
+    language: Optional[SupportedLanguage] = None
 
 
 class AnalysisResponse(BaseModel):
@@ -175,6 +187,7 @@ class AnalysisResponse(BaseModel):
     status: AnalysisStatus
     filename: Optional[str] = None
     llm_provider: LLMProvider
+    language: SupportedLanguage = SupportedLanguage.PYTHON
     total_functions: int = 0
     total_claims: int = 0
     total_violations: int = 0

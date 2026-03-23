@@ -70,6 +70,9 @@ def client():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_db] = _override_get_db
+    # Reset the shared rate limiter so tests don't interfere
+    from app.api.router import _analysis_rate_limiter
+    _analysis_rate_limiter._requests.clear()
 
     with patch("app.pipeline.tasks.run_pipeline") as mock_task:
         mock_task.delay = MagicMock()
@@ -140,8 +143,8 @@ class TestCreateAnalysisSourceCode:
         )
         assert resp.status_code == 422
         detail = resp.json()["detail"]
-        assert "line" in detail
         assert "message" in detail
+        assert "error" in detail
 
     def test_llm_provider_selection(self, client):
         resp = client.post(
@@ -188,7 +191,8 @@ class TestCreateAnalysisFileUpload:
         )
         assert resp.status_code == 422
         detail = resp.json()["detail"]
-        assert detail["line"] is not None
+        assert "message" in detail
+        assert "error" in detail
 
     def test_oversized_file_returns_413(self, client):
         big_content = b"x = 1\n" * 200_000  # ~1.2 MB
@@ -198,3 +202,211 @@ class TestCreateAnalysisFileUpload:
         )
         assert resp.status_code == 413
         assert "File too large" in resp.json()["detail"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/analyses — Language detection (Requirements 1.1, 1.2, 10.1, 10.2)
+# ---------------------------------------------------------------------------
+
+VALID_JS = "function greet(name) {\n  return 'Hello ' + name;\n}\n"
+VALID_TS = "function greet(name: string): string {\n  return 'Hello ' + name;\n}\n"
+VALID_GO = "package main\n\nfunc main() {\n}\n"
+VALID_JAVA = "public class Hello {\n  public static void main(String[] args) {}\n}\n"
+VALID_RUST = "fn main() {\n    println!(\"hello\");\n}\n"
+INVALID_JS = "function broken({\n"
+
+_LLM = "gemini-3-flash-preview"
+
+
+class TestLanguageDetectionSingleFile:
+    """Test that single-file uploads detect language from file extension.
+
+    Requirements: 1.1, 1.2, 8.1, 10.1
+    """
+
+    def test_js_file_detected_as_javascript(self, client):
+        """Uploading a .js file sets language='javascript' on the Analysis record."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("app.js", io.BytesIO(VALID_JS.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "javascript"
+        session.close()
+
+    def test_ts_file_detected_as_typescript(self, client):
+        """Uploading a .ts file sets language='typescript' on the Analysis record."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("utils.ts", io.BytesIO(VALID_TS.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "typescript"
+        session.close()
+
+    def test_go_file_detected_as_go(self, client):
+        """Uploading a .go file sets language='go' on the Analysis record."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("main.go", io.BytesIO(VALID_GO.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "go"
+        session.close()
+
+    def test_py_file_detected_as_python(self, client):
+        """Uploading a .py file sets language='python' on the Analysis record."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("test.py", io.BytesIO(VALID_PYTHON.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "python"
+        session.close()
+
+
+class TestBackwardCompatibility:
+    """Test that existing Python workflows remain unchanged.
+
+    Requirements: 10.1, 10.2
+    """
+
+    def test_code_paste_defaults_to_python(self, client):
+        """source_code paste without a file defaults to language='python'."""
+        resp = client.post(
+            "/api/analyses",
+            data={"source_code": VALID_PYTHON, "llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "python"
+        session.close()
+
+    def test_python_file_upload_still_works(self, client):
+        """Existing .py file upload flow is unchanged."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("hello.py", io.BytesIO(VALID_PYTHON.encode()), "text/x-python")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        body = resp.json()
+        assert "analysis_id" in body
+
+    def test_invalid_python_paste_still_returns_422(self, client):
+        """Invalid Python code paste still returns 422 with error details."""
+        resp = client.post(
+            "/api/analyses",
+            data={"source_code": INVALID_PYTHON},
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "error" in detail
+
+    def test_analysis_model_defaults_language_to_python(self):
+        """Analysis records created without explicit language get 'python'.
+
+        Simulates existing records after migration: the column default
+        ensures all pre-existing rows have language='python'.
+
+        Requirements: 10.4
+        """
+        session = _TestingSession()
+        analysis = Analysis(
+            source_code="x = 1\n",
+            llm_provider="gemini-3-flash-preview",
+        )
+        session.add(analysis)
+        session.commit()
+        session.refresh(analysis)
+        assert analysis.language == "python"
+        session.close()
+
+    def test_api_response_includes_language_field(self, client):
+        """API response for code paste includes language='python'.
+
+        Requirements: 10.5
+        """
+        resp = client.post(
+            "/api/analyses",
+            data={"source_code": VALID_PYTHON, "llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        # Fetch the analysis detail and verify language is in the response
+        detail_resp = client.get(f"/api/analyses/{aid}")
+        assert detail_resp.status_code == 200
+        body = detail_resp.json()
+        assert body["language"] == "python"
+
+
+class TestSyntaxValidationPerLanguage:
+    """Test that syntax validation uses the language-specific parser.
+
+    Requirements: 8.1, 8.8, 10.2
+    """
+
+    def test_invalid_js_file_returns_422(self, client):
+        """Uploading a .js file with invalid syntax returns 422."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("bad.js", io.BytesIO(INVALID_JS.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "error" in detail
+
+    def test_valid_js_file_passes_validation(self, client):
+        """Uploading a valid .js file passes syntax validation and returns 202."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("app.js", io.BytesIO(VALID_JS.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+
+    def test_valid_rust_file_passes_validation(self, client):
+        """Uploading a valid .rs file passes syntax validation and returns 202."""
+        resp = client.post(
+            "/api/analyses",
+            files={"file": ("lib.rs", io.BytesIO(VALID_RUST.encode()), "text/plain")},
+            data={"llm_provider": _LLM},
+        )
+        assert resp.status_code == 202
+        aid = resp.json()["analysis_id"]
+
+        session = _TestingSession()
+        analysis = session.query(Analysis).filter_by(id=aid).first()
+        assert analysis is not None
+        assert analysis.language == "rust"
+        session.close()

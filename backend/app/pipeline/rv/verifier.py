@@ -28,6 +28,7 @@ from typing import Any
 import re
 
 from app.config import settings
+from app.pipeline.runtimes import RuntimeAdapter
 from app.schemas import SynthesizedTest, TestOutcome, ViolationRecord, ViolationReport
 
 logger = logging.getLogger(__name__)
@@ -91,8 +92,13 @@ class RuntimeVerifier:
         ``settings.test_timeout``, which defaults to 30).
     """
 
-    def __init__(self, timeout: int | None = None) -> None:
+    def __init__(
+        self,
+        timeout: int | None = None,
+        runtime: RuntimeAdapter | None = None,
+    ) -> None:
         self.timeout = timeout if timeout is not None else settings.test_timeout
+        self.runtime = runtime
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -233,11 +239,19 @@ class RuntimeVerifier:
                 total_claims=0,
             )
 
-        # 1. Write temp test module
-        test_file = self._write_test_module(test_suite, source_code)
-
-        # 2. Run pytest
-        raw_results = self._run_pytest(test_file)
+        # 1. Write temp test module & 2. Run tests
+        if self.runtime is not None:
+            # Use the language-specific RuntimeAdapter
+            tmpdir = tempfile.mkdtemp(prefix="veridoc_rv_")
+            try:
+                test_file = self.runtime.write_test_module(test_suite, source_code, tmpdir)
+                raw_results = self.runtime.execute(test_file, self.timeout)
+            finally:
+                self._safe_remove_dir(tmpdir)
+        else:
+            # Fallback: hardcoded pytest execution (backward compatibility)
+            test_file = self._write_test_module(test_suite, source_code)
+            raw_results = self._run_pytest(test_file)
 
         # Build a nodeid → result lookup for matching back to tests
         result_by_name: dict[str, dict[str, Any]] = {}

@@ -20,6 +20,7 @@ import re
 from typing import Optional
 
 from app.config import settings
+from app.pipeline.frameworks import TestFramework
 from app.schemas import BCVCategory, Claim, ClaimSchema, LLMProvider, SynthesizedTest
 
 logger = logging.getLogger(__name__)
@@ -164,8 +165,8 @@ class LLMClient:
         Initial backoff delay in seconds (doubles each retry).
     """
 
-    _MAX_RETRIES_DEFAULT = 3
-    _BASE_DELAY_DEFAULT = 1.0
+    _MAX_RETRIES_DEFAULT = 5
+    _BASE_DELAY_DEFAULT = 10.0
 
     def __init__(
         self,
@@ -379,25 +380,37 @@ _DEF_TEST_RE = re.compile(
 )
 
 
-def _parse_test_output(raw_output: str) -> Optional[str]:
-    """Extract a valid pytest function from an LLM response.
+def _parse_test_output(
+    raw_output: str,
+    framework: Optional[TestFramework] = None,
+) -> Optional[str]:
+    """Extract a valid test function from an LLM response.
+
+    When *framework* is provided, uses ``framework.validate_test_syntax()``
+    instead of ``ast.parse()`` for validation, enabling non-Python test code.
+    When *framework* is ``None``, falls back to the original Python
+    ``ast.parse()`` validation for backward compatibility.
 
     Steps:
     1. If the response contains markdown code blocks, extract the code
        from the first block.
-    2. Locate the test function (starts with ``def test_``).
-    3. Validate the extracted code with ``ast.parse()``.
+    2. For Python (no framework or pytest): locate ``def test_`` and extract
+       the function with imports.  For non-Python frameworks: use the full
+       extracted code block.
+    3. Validate with ``framework.validate_test_syntax()`` or ``ast.parse()``.
     4. Return the valid test code, or ``None`` if parsing fails.
 
     Parameters
     ----------
     raw_output : str
         Raw text response from the LLM provider.
+    framework : TestFramework | None
+        Optional test framework for language-specific validation.
 
     Returns
     -------
     str | None
-        Syntactically valid pytest function source, or ``None``.
+        Syntactically valid test function source, or ``None``.
     """
     if not raw_output or not raw_output.strip():
         return None
@@ -408,63 +421,72 @@ def _parse_test_output(raw_output: str) -> Optional[str]:
     if block_match:
         code = block_match.group(1)
 
-    # Step 2: find the test function definition
-    # We need to locate "def test_..." and capture everything from there
-    lines = code.split("\n")
-    func_start: Optional[int] = None
-    for i, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("def test_"):
-            func_start = i
-            break
+    # Determine if we should use Python-specific extraction logic
+    is_python = framework is None or framework.get_framework_name() == "pytest"
 
-    if func_start is None:
-        return None
+    if is_python:
+        # Step 2 (Python): find the test function definition
+        lines = code.split("\n")
+        func_start: Optional[int] = None
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith("def test_"):
+                func_start = i
+                break
 
-    # Collect the function: from def test_... to the end of the indented block
-    func_lines = [lines[func_start]]
-    # Determine the base indentation of the def line
-    base_indent = len(lines[func_start]) - len(lines[func_start].lstrip())
+        if func_start is None:
+            return None
 
-    for line in lines[func_start + 1:]:
-        # Empty lines are part of the function body
-        if not line.strip():
-            func_lines.append(line)
-            continue
-        current_indent = len(line) - len(line.lstrip())
-        if current_indent > base_indent:
-            func_lines.append(line)
+        # Collect the function: from def test_... to the end of the indented block
+        func_lines = [lines[func_start]]
+        base_indent = len(lines[func_start]) - len(lines[func_start].lstrip())
+
+        for line in lines[func_start + 1:]:
+            if not line.strip():
+                func_lines.append(line)
+                continue
+            current_indent = len(line) - len(line.lstrip())
+            if current_indent > base_indent:
+                func_lines.append(line)
+            else:
+                break
+
+        # Also collect any import lines that appear before the function
+        import_lines: list[str] = []
+        for line in lines[:func_start]:
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ")):
+                import_lines.append(line)
+
+        if import_lines:
+            test_code = "\n".join(import_lines) + "\n\n" + "\n".join(func_lines)
         else:
-            # Check if this is another def or top-level statement — stop
-            break
+            test_code = "\n".join(func_lines)
 
-    # Also collect any import lines that appear before the function
-    import_lines: list[str] = []
-    for line in lines[:func_start]:
-        stripped = line.strip()
-        if stripped.startswith(("import ", "from ")):
-            import_lines.append(line)
+        test_code = test_code.rstrip()
 
-    # Build the full test code
-    if import_lines:
-        test_code = "\n".join(import_lines) + "\n\n" + "\n".join(func_lines)
+        # Step 3 (Python): validate with ast.parse()
+        try:
+            ast.parse(test_code)
+        except SyntaxError:
+            return None
+
+        # Step 4: final check — must contain def test_
+        if "def test_" not in test_code:
+            return None
+
+        return test_code
     else:
-        test_code = "\n".join(func_lines)
+        # Step 2 (non-Python): use the full extracted code block
+        test_code = code.strip()
+        if not test_code:
+            return None
 
-    # Strip trailing whitespace
-    test_code = test_code.rstrip()
+        # Step 3 (non-Python): validate with framework
+        if not framework.validate_test_syntax(test_code):
+            return None
 
-    # Step 3: validate with ast.parse()
-    try:
-        ast.parse(test_code)
-    except SyntaxError:
-        return None
-
-    # Step 4: final check — must contain def test_
-    if "def test_" not in test_code:
-        return None
-
-    return test_code
+        return test_code
 
 
 def _extract_function_name(test_code: str) -> Optional[str]:
@@ -497,13 +519,20 @@ def _extract_function_name(test_code: str) -> Optional[str]:
 
 
 class DynamicTestSynthesizer:
-    """Converts behavioral claims into executable pytest test functions.
+    """Converts behavioral claims into executable test functions.
 
     For each claim in a :class:`ClaimSchema`, the synthesizer:
     1. Builds a constrained prompt (SEV claims use the deepcopy-assert pattern).
     2. Calls the configured LLM provider via :class:`LLMClient`.
-    3. Parses and validates the response as a pytest function.
+    3. Parses and validates the response as a test function.
     4. Produces a :class:`SynthesizedTest` on success.
+
+    When a :class:`TestFramework` is provided, the synthesizer uses
+    ``framework.get_system_prompt_context()`` to build language-specific
+    system prompts and ``framework.validate_test_syntax()`` to validate
+    generated test code.  When no framework is provided, falls back to
+    the existing hardcoded pytest prompts and ``ast.parse()`` validation
+    for backward compatibility.
 
     Parameters
     ----------
@@ -511,15 +540,20 @@ class DynamicTestSynthesizer:
         Which LLM backend to use for test generation.
     temperature : float
         Sampling temperature for LLM calls (default 0.1 per spec).
+    framework : TestFramework | None
+        Optional test framework adapter for language-specific prompt
+        context and syntax validation.
     """
 
     def __init__(
         self,
         llm_provider: LLMProvider,
         temperature: float = 0.1,
+        framework: Optional[TestFramework] = None,
     ) -> None:
         self.llm_provider = llm_provider
         self.temperature = temperature
+        self.framework = framework
         self._client = LLMClient(provider=llm_provider)
 
     async def synthesize(self, claim_schema: ClaimSchema) -> list[SynthesizedTest]:
@@ -527,6 +561,10 @@ class DynamicTestSynthesizer:
 
         Iterates over each claim, builds the appropriate prompt, calls the
         LLM, parses the response, and collects successful results.
+
+        When a framework is set, uses ``framework.get_system_prompt_context()``
+        to build language-specific system prompts instead of the hardcoded
+        pytest category prompts.
 
         Parameters
         ----------
@@ -544,11 +582,17 @@ class DynamicTestSynthesizer:
         signature = claim_schema.function.signature
 
         for claim in claim_schema.claims:
-            # Step 1: build prompt — SEV claims use the deepcopy-assert pattern
-            if claim.category == BCVCategory.SEV:
+            # Step 1: build prompt
+            if self.framework is not None:
+                prompt = self._build_framework_prompt(claim, signature)
+            elif claim.category == BCVCategory.SEV:
                 prompt = build_sev_prompt(claim, signature)
             else:
                 prompt = build_prompt(claim, signature)
+
+            # Rate-limit: wait between LLM calls to avoid quota exhaustion
+            # on free-tier API keys (e.g. Gemini 5 req/min).
+            await asyncio.sleep(13)
 
             # Step 2: call LLM
             try:
@@ -565,7 +609,7 @@ class DynamicTestSynthesizer:
                 continue
 
             # Step 3: parse and validate the response
-            test_code = _parse_test_output(raw_output)
+            test_code = _parse_test_output(raw_output, framework=self.framework)
             if test_code is None:
                 logger.warning(
                     "Failed to parse valid test from LLM output for claim '%s'.",
@@ -573,8 +617,13 @@ class DynamicTestSynthesizer:
                 )
                 continue
 
-            # Extract function name
-            func_name = _extract_function_name(test_code)
+            # Extract function name (Python-specific for pytest, generic for others)
+            if self.framework is None or self.framework.get_framework_name() == "pytest":
+                func_name = _extract_function_name(test_code)
+            else:
+                # For non-Python frameworks, derive a test name from the claim
+                func_name = f"test_{claim.subject}_{claim.category.value}".replace(" ", "_")
+
             if func_name is None:
                 logger.warning(
                     "Could not extract test function name for claim '%s'.",
@@ -595,3 +644,52 @@ class DynamicTestSynthesizer:
             )
 
         return results
+
+    def _build_framework_prompt(self, claim: Claim, signature: str) -> dict:
+        """Build a prompt using the framework's system prompt context.
+
+        Combines the framework-specific context with claim and signature
+        information, producing a prompt suitable for any supported language.
+
+        Parameters
+        ----------
+        claim : Claim
+            The behavioral claim to generate a test for.
+        signature : str
+            The function signature (no body).
+
+        Returns
+        -------
+        dict
+            Prompt dict with ``system``, ``user``, and ``temperature`` keys.
+        """
+        assert self.framework is not None
+
+        # Build system prompt from framework context + category-specific guidance
+        framework_context = self.framework.get_system_prompt_context()
+        category_guidance = (
+            f"You are generating a test for a {claim.category.value} "
+            f"(behavioral claim category) claim. "
+        )
+        if claim.category == BCVCategory.SEV:
+            category_guidance += (
+                "This is a side-effect verification claim. "
+                "Deep-copy all arguments before calling the function, "
+                "then assert each argument claimed immutable equals its pre-call snapshot. "
+            )
+
+        system_prompt = f"{framework_context}\n\n{category_guidance}"
+
+        user_content = json.dumps({
+            "claim": claim.predicate_object,
+            "condition": claim.conditionality,
+            "signature": signature,
+            "subjects": [claim.subject],
+            "output_schema": OUTPUT_SCHEMA,
+        })
+
+        return {
+            "system": system_prompt,
+            "user": user_content,
+            "temperature": 0.1,
+        }
