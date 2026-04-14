@@ -61,7 +61,7 @@ class PreCommitHook:
     def __init__(
         self,
         strictness: str = "high",
-        llm_provider: str = "gemini-3-flash-preview",
+        llm_provider: str = "gemma-4-31b-it",
     ) -> None:
         self.strictness = strictness
         self.llm_provider = llm_provider

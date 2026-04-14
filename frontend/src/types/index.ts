@@ -26,7 +26,7 @@ export type AnalysisStatus =
 export type TestOutcome = "pass" | "fail" | "error" | "undetermined";
 
 /** Supported LLM providers. */
-export type LLMProvider = "gpt-4.1-mini" | "claude-sonnet-4-20250514" | "gemini-3-flash-preview" | "bedrock";
+export type LLMProvider = "gpt-4.1-mini" | "claude-sonnet-4-20250514" | "gemma-4-31b-it" | "bedrock";
 
 /** Supported programming languages for analysis. (Requirements: 6.5) */
 export type SupportedLanguage =
@@ -152,8 +152,8 @@ export interface BatchUploadPayload {
 // Three-tab dashboard types (Requirements: 1.1, 6.1, 6.4, 8.4, 8.5, 10.1)
 // ---------------------------------------------------------------------------
 
-/** The three dashboard tab identifiers. */
-export type DashboardTab = "documentation" | "verification" | "research";
+/** The five dashboard tab identifiers. */
+export type DashboardTab = "documentation" | "verification" | "graph" | "health" | "research";
 
 /** A node in the documentation tree returned by the backend. */
 export interface DocumentationNode {
@@ -227,4 +227,112 @@ export interface ClaimGroup {
   source: string;
   lineno: number;
   claims: Claim[];
+}
+
+// ---------------------------------------------------------------------------
+// Stats API response (Research tab)
+// ---------------------------------------------------------------------------
+
+/** Recent analysis summary for the stats endpoint. */
+export interface RecentAnalysis {
+  id: string;
+  filename: string | null;
+  language: SupportedLanguage;
+  status: AnalysisStatus;
+  llmProvider: string;
+  totalClaims: number;
+  totalViolations: number;
+  bcvRate: number;
+  createdAt: string | null;
+}
+
+/** Aggregate statistics returned by GET /api/stats. */
+export interface Stats {
+  totalAnalyses: number;
+  completedAnalyses: number;
+  totalFunctions: number;
+  totalClaims: number;
+  totalViolations: number;
+  avgBcvRate: number;
+  categoryBreakdown: Record<string, number>;
+  languageDistribution: Record<string, number>;
+  providerUsage: Record<string, number>;
+  detectionRates: Record<string, number>;
+  recentAnalyses: RecentAnalysis[];
+}
+
+
+// ---------------------------------------------------------------------------
+// Knowledge Graph types
+// ---------------------------------------------------------------------------
+
+/** Node in the code knowledge graph. */
+export interface GraphNode {
+  id: string;
+  type: "module" | "class" | "function" | "method" | "import" | "claim" | "violation";
+  name: string;
+  fullName?: string;
+  lineno?: number;
+  docstring?: string | null;
+  signature?: string;
+  category?: BCVCategory;
+  fullText?: string;
+  outcome?: string;
+}
+
+/** Edge in the code knowledge graph. */
+export interface GraphEdge {
+  source: string;
+  target: string;
+  type: "contains" | "has_method" | "calls" | "imports" | "inherits" | "has_claim" | "violated_by";
+}
+
+/** Knowledge graph structure. */
+export interface CodeGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+/** Response from GET /api/analyses/:id/graph. */
+export interface GraphResponse {
+  analysisId: string;
+  language: SupportedLanguage;
+  graph: CodeGraph;
+}
+
+// ---------------------------------------------------------------------------
+// Documentation Health types
+// ---------------------------------------------------------------------------
+
+/** Per-function health metrics. */
+export interface FunctionHealth {
+  id: string;
+  name: string;
+  signature: string;
+  hasDocstring: boolean;
+  docstringLength: number;
+  claimCount: number;
+  violationCount: number;
+  healthScore: number;
+  categories: BCVCategory[];
+}
+
+/** Documentation health metrics. */
+export interface DocHealthMetrics {
+  totalFunctions: number;
+  documentedFunctions: number;
+  undocumentedFunctions: number;
+  coverage: number;
+  totalClaims: number;
+  totalViolations: number;
+  claimDensity: number;
+  violationRate: number;
+}
+
+/** Response from GET /api/analyses/:id/doc-health. */
+export interface DocHealthResponse {
+  analysisId: string;
+  overallHealth: number;
+  metrics: DocHealthMetrics;
+  functions: FunctionHealth[];
 }

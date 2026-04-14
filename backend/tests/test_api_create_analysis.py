@@ -122,7 +122,7 @@ class TestCreateAnalysisSourceCode:
     def test_valid_python_returns_202(self, client):
         resp = client.post(
             "/api/analyses",
-            data={"source_code": VALID_PYTHON, "llm_provider": "gpt-4o"},
+            data={"source_code": VALID_PYTHON, "llm_provider": "gpt-4.1-mini"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -133,7 +133,7 @@ class TestCreateAnalysisSourceCode:
         analysis = session.query(Analysis).filter_by(id=body["analysis_id"]).first()
         assert analysis is not None
         assert analysis.status == "pending"
-        assert analysis.llm_provider == "gpt-4o"
+        assert analysis.llm_provider == "gpt-4.1-mini"
         session.close()
 
     def test_invalid_python_returns_422(self, client):
@@ -149,13 +149,13 @@ class TestCreateAnalysisSourceCode:
     def test_llm_provider_selection(self, client):
         resp = client.post(
             "/api/analyses",
-            data={"source_code": VALID_PYTHON, "llm_provider": "claude-3-5-sonnet"},
+            data={"source_code": VALID_PYTHON, "llm_provider": "claude-sonnet-4-20250514"},
         )
         assert resp.status_code == 202
         aid = resp.json()["analysis_id"]
         session = _TestingSession()
         analysis = session.query(Analysis).filter_by(id=aid).first()
-        assert analysis.llm_provider == "claude-3-5-sonnet"
+        assert analysis.llm_provider == "claude-sonnet-4-20250514"
         session.close()
 
     def test_no_input_returns_400(self, client):
@@ -174,7 +174,7 @@ class TestCreateAnalysisFileUpload:
         resp = client.post(
             "/api/analyses",
             files={"file": ("test.py", io.BytesIO(file_content), "text/x-python")},
-            data={"llm_provider": "gpt-4o"},
+            data={"llm_provider": "gpt-4.1-mini"},
         )
         assert resp.status_code == 202
         aid = resp.json()["analysis_id"]
@@ -215,7 +215,7 @@ VALID_JAVA = "public class Hello {\n  public static void main(String[] args) {}\
 VALID_RUST = "fn main() {\n    println!(\"hello\");\n}\n"
 INVALID_JS = "function broken({\n"
 
-_LLM = "gemini-3-flash-preview"
+_LLM = "gemma-4-31b-it"
 
 
 class TestLanguageDetectionSingleFile:
@@ -342,7 +342,7 @@ class TestBackwardCompatibility:
         session = _TestingSession()
         analysis = Analysis(
             source_code="x = 1\n",
-            llm_provider="gemini-3-flash-preview",
+            llm_provider="gemma-4-31b-it",
         )
         session.add(analysis)
         session.commit()

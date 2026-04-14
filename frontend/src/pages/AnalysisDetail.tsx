@@ -12,6 +12,8 @@ import TabNavigation from "@/components/dashboard/TabNavigation";
 import DocumentationTab from "@/components/dashboard/DocumentationTab";
 import VerificationTab from "@/components/dashboard/VerificationTab";
 import ResearchTab from "@/components/dashboard/ResearchTab";
+import KnowledgeGraph from "@/components/dashboard/KnowledgeGraph";
+import DocHealthPanel from "@/components/dashboard/DocHealthPanel";
 import { SpotlightCard, AnimatedNumber, StaggerChildren, StaggerItem, ShimmerButton } from "@/components/ui";
 import { useAnalysis, useViolationReport, useClaims } from "@/hooks/useAnalysis";
 import { cn } from "@/lib/utils";
@@ -450,6 +452,12 @@ export default function AnalysisDetail() {
           {activatedTabs.has("verification") && (
             <VerificationTab analysis={analysis} report={report} claimGroups={claimGroups} isReportLoading={isReportLoading} isReportError={isReportError} />
           )}
+        </div>
+        <div className={activeTab === "graph" ? "block" : "hidden"}>
+          {activatedTabs.has("graph") && <KnowledgeGraph analysisId={id!} />}
+        </div>
+        <div className={activeTab === "health" ? "block" : "hidden"}>
+          {activatedTabs.has("health") && <DocHealthPanel analysisId={id!} />}
         </div>
         <div className={activeTab === "research" ? "block" : "hidden"}>
           {activatedTabs.has("research") && <ResearchTab />}

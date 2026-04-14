@@ -104,7 +104,7 @@ class TestMultipartBatchUpload:
                 ("files", ("app.js", b"const x = 1;\n", "text/plain")),
                 ("files", ("main.go", b"package main\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -121,7 +121,7 @@ class TestMultipartBatchUpload:
                 ("files", ("hello.py", b"x = 1\n", "text/plain")),
                 ("files", ("app.ts", b"const x: number = 1;\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -143,7 +143,7 @@ class TestMultipartBatchUpload:
                 ("files", ("good.py", b"x = 1\n", "text/plain")),
                 ("files", ("bad.py", b"def foo(\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -161,7 +161,7 @@ class TestMultipartBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=too_many,
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 400
         assert "50" in resp.json()["detail"]["error"]
@@ -176,7 +176,7 @@ class TestMultipartBatchUpload:
                 ("files", ("big1.py", big_content, "text/plain")),
                 ("files", ("big2.py", big_content, "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 413
 
@@ -188,7 +188,7 @@ class TestMultipartBatchUpload:
                 ("files", ("bad1.py", b"def foo(\n", "text/plain")),
                 ("files", ("bad2.py", b"class :\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 422
         body = resp.json()
@@ -205,7 +205,7 @@ class TestMultipartBatchUpload:
                     ("files", ("a.py", b"x = 1\n", "text/plain")),
                     ("files", ("b.py", b"y = 2\n", "text/plain")),
                 ],
-                data={"llm_provider": "gemini-3-flash-preview"},
+                data={"llm_provider": "gemma-4-31b-it"},
             )
             assert resp.status_code == 202
             assert mock_task.delay.call_count == 2
@@ -228,7 +228,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", zip_bytes, "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -245,7 +245,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", zip_bytes, "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -269,7 +269,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", zip_bytes, "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         assert resp.json()["total"] == 1
@@ -283,7 +283,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", zip_bytes, "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 400
 
@@ -294,7 +294,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", zip_bytes, "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 413
 
@@ -303,7 +303,7 @@ class TestZipBatchUpload:
         resp = client.post(
             "/api/analyses/batch",
             files=[("file", ("project.zip", b"not a zip", "application/zip"))],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 400
 
@@ -320,7 +320,7 @@ class TestBatchEdgeCases:
         """No file or files provided returns 400."""
         resp = client.post(
             "/api/analyses/batch",
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 400 or resp.status_code == 422
 
@@ -331,7 +331,7 @@ class TestBatchEdgeCases:
             files=[
                 ("files", ("good.py", b"x = 1\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         body = resp.json()
@@ -345,7 +345,7 @@ class TestBatchEdgeCases:
             files=[
                 ("files", ("hello.py", b"x = 1\n", "text/plain")),
             ],
-            data={"llm_provider": "gemini-3-flash-preview"},
+            data={"llm_provider": "gemma-4-31b-it"},
         )
         assert resp.status_code == 202
         batch_id = resp.json()["batch_id"]

@@ -5,7 +5,7 @@
  */
 
 import axios from "axios";
-import type { Analysis, Claim, ViolationReport, BatchResult, DocumentationTree, FileWithPath, LLMProvider } from "@/types";
+import type { Analysis, Claim, ViolationReport, BatchResult, DocumentationTree, FileWithPath, LLMProvider, Stats, GraphResponse, DocHealthResponse } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Axios instance — all requests go through the /api prefix.
@@ -86,6 +86,15 @@ export const analysisApi = {
   /** Get the documentation tree for a completed analysis. */
   getDocumentation: (id: string) =>
     api.get<DocumentationTree>(`/analyses/${id}/documentation`),
+
+  /** Get aggregate statistics for the Research tab. */
+  getStats: () => api.get<Stats>("/stats"),
+
+  /** Get knowledge graph for code visualization. */
+  getGraph: (id: string) => api.get<GraphResponse>(`/analyses/${id}/graph`),
+
+  /** Get documentation health metrics. */
+  getDocHealth: (id: string) => api.get<DocHealthResponse>(`/analyses/${id}/doc-health`),
 };
 
 export default api;

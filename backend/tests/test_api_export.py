@@ -322,7 +322,7 @@ class TestRateLimiting:
     def test_allows_requests_under_limit(self, client):
         resp = client.post(
             "/api/analyses",
-            data={"source_code": "x = 1", "llm_provider": "gpt-4o"},
+            data={"source_code": "x = 1", "llm_provider": "gpt-4.1-mini"},
         )
         assert resp.status_code == 202
 
@@ -330,13 +330,13 @@ class TestRateLimiting:
         for _ in range(10):
             resp = client.post(
                 "/api/analyses",
-                data={"source_code": "x = 1", "llm_provider": "gpt-4o"},
+                data={"source_code": "x = 1", "llm_provider": "gpt-4.1-mini"},
             )
             assert resp.status_code == 202
 
         # 11th request should be rate-limited
         resp = client.post(
             "/api/analyses",
-            data={"source_code": "x = 1", "llm_provider": "gpt-4o"},
+            data={"source_code": "x = 1", "llm_provider": "gpt-4.1-mini"},
         )
         assert resp.status_code == 429

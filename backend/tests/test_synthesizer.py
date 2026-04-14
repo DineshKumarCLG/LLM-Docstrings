@@ -234,7 +234,7 @@ class TestSynthesizeMethod:
         st = results[0]
         assert isinstance(st, SynthesizedTest)
         assert st.test_function_name == "test_returns_list"
-        assert st.synthesis_model == "gpt-4o"
+        assert st.synthesis_model == "gpt-4.1-mini"
         assert "def test_returns_list" in st.test_code
         assert st.claim == schema.claims[0]
 

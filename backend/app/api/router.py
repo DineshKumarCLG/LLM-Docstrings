@@ -1044,3 +1044,543 @@ def _text_to_pdf(text: str) -> bytes:
     )
 
     return (header + body + "\n" + xref_section + trailer).encode("latin-1", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/stats — Aggregate statistics for Research tab
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stats")
+def get_stats(db: Session = Depends(get_db)) -> dict:
+    """Return aggregate statistics across all analyses.
+
+    Provides data for the Research tab including:
+    - Total analyses, functions, claims, violations
+    - Category breakdown of violations
+    - Language distribution
+    - LLM provider usage
+    - Detection rates per provider
+    """
+    from sqlalchemy import func
+
+    # Basic counts
+    total_analyses = db.query(func.count(Analysis.id)).scalar() or 0
+    completed_analyses = (
+        db.query(func.count(Analysis.id))
+        .filter(Analysis.status == AnalysisStatus.COMPLETE.value)
+        .scalar() or 0
+    )
+    total_functions = db.query(func.sum(Analysis.total_functions)).scalar() or 0
+    total_claims = db.query(func.sum(Analysis.total_claims)).scalar() or 0
+    total_violations = db.query(func.sum(Analysis.total_violations)).scalar() or 0
+
+    # Average BCV rate across completed analyses
+    avg_bcv_rate = (
+        db.query(func.avg(Analysis.bcv_rate))
+        .filter(Analysis.status == AnalysisStatus.COMPLETE.value)
+        .scalar() or 0.0
+    )
+
+    # Category breakdown from violations
+    category_counts = (
+        db.query(Claim.category, func.count(Violation.id))
+        .join(Violation, Violation.claim_id == Claim.id)
+        .group_by(Claim.category)
+        .all()
+    )
+    category_breakdown = {cat: count for cat, count in category_counts}
+
+    # Language distribution
+    language_counts = (
+        db.query(Analysis.language, func.count(Analysis.id))
+        .group_by(Analysis.language)
+        .all()
+    )
+    language_distribution = {lang: count for lang, count in language_counts}
+
+    # LLM provider usage and detection rates
+    provider_stats = (
+        db.query(
+            Analysis.llm_provider,
+            func.count(Analysis.id),
+            func.sum(Analysis.total_violations),
+            func.sum(Analysis.total_claims),
+            func.avg(Analysis.bcv_rate),
+        )
+        .filter(Analysis.status == AnalysisStatus.COMPLETE.value)
+        .group_by(Analysis.llm_provider)
+        .all()
+    )
+
+    provider_usage = {}
+    detection_rates = {}
+    for provider, count, violations, claims, avg_rate in provider_stats:
+        provider_usage[provider] = count
+        # Detection rate = violations found / total claims
+        if claims and claims > 0:
+            detection_rates[provider] = (violations or 0) / claims
+        else:
+            detection_rates[provider] = 0.0
+
+    # Recent analyses (last 10)
+    recent = (
+        db.query(Analysis)
+        .order_by(Analysis.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    recent_analyses = [
+        {
+            "id": a.id,
+            "filename": a.filename,
+            "language": a.language,
+            "status": a.status,
+            "llmProvider": a.llm_provider,
+            "totalClaims": a.total_claims,
+            "totalViolations": a.total_violations,
+            "bcvRate": a.bcv_rate,
+            "createdAt": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in recent
+    ]
+
+    return {
+        "totalAnalyses": total_analyses,
+        "completedAnalyses": completed_analyses,
+        "totalFunctions": int(total_functions),
+        "totalClaims": int(total_claims),
+        "totalViolations": int(total_violations),
+        "avgBcvRate": float(avg_bcv_rate),
+        "categoryBreakdown": category_breakdown,
+        "languageDistribution": language_distribution,
+        "providerUsage": provider_usage,
+        "detectionRates": detection_rates,
+        "recentAnalyses": recent_analyses,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analyses/{id}/graph — Knowledge graph for code visualization
+# ---------------------------------------------------------------------------
+
+
+def _extract_code_graph(source_code: str, language: str) -> dict:
+    """Extract a knowledge graph from source code.
+    
+    Returns nodes (modules, classes, functions, claims, violations) and
+    edges (contains, calls, has_claim, imports, inherits).
+    """
+    import ast as ast_module
+    
+    nodes = []
+    edges = []
+    node_id_counter = [0]
+    
+    def make_id():
+        node_id_counter[0] += 1
+        return f"n{node_id_counter[0]}"
+    
+    if language != "python":
+        # For non-Python, return a simple module node
+        mod_id = make_id()
+        nodes.append({
+            "id": mod_id,
+            "type": "module",
+            "name": "source",
+            "lineno": 1,
+            "docstring": None,
+        })
+        return {"nodes": nodes, "edges": edges}
+    
+    try:
+        tree = ast_module.parse(source_code)
+    except SyntaxError:
+        return {"nodes": [], "edges": []}
+    
+    source_lines = source_code.splitlines()
+    
+    # Track function/class names to IDs for edge creation
+    name_to_id: dict[str, str] = {}
+    class_methods: dict[str, list[str]] = {}  # class_name -> [method_ids]
+    
+    # Module node
+    mod_id = make_id()
+    nodes.append({
+        "id": mod_id,
+        "type": "module",
+        "name": "module",
+        "lineno": 1,
+        "docstring": ast_module.get_docstring(tree),
+    })
+    
+    # Extract imports
+    imports = []
+    for node in ast_module.iter_child_nodes(tree):
+        if isinstance(node, ast_module.Import):
+            for alias in node.names:
+                imports.append(alias.name)
+        elif isinstance(node, ast_module.ImportFrom):
+            if node.module:
+                imports.append(node.module)
+    
+    # Add import nodes
+    for imp in set(imports):
+        imp_id = make_id()
+        nodes.append({
+            "id": imp_id,
+            "type": "import",
+            "name": imp,
+            "lineno": 0,
+            "docstring": None,
+        })
+        edges.append({
+            "source": mod_id,
+            "target": imp_id,
+            "type": "imports",
+        })
+    
+    # Extract classes and functions
+    for node in ast_module.iter_child_nodes(tree):
+        if isinstance(node, ast_module.ClassDef):
+            class_id = make_id()
+            name_to_id[node.name] = class_id
+            class_methods[node.name] = []
+            
+            nodes.append({
+                "id": class_id,
+                "type": "class",
+                "name": node.name,
+                "lineno": node.lineno,
+                "docstring": ast_module.get_docstring(node),
+            })
+            edges.append({
+                "source": mod_id,
+                "target": class_id,
+                "type": "contains",
+            })
+            
+            # Extract base classes (inheritance)
+            for base in node.bases:
+                if isinstance(base, ast_module.Name):
+                    base_name = base.id
+                    if base_name in name_to_id:
+                        edges.append({
+                            "source": class_id,
+                            "target": name_to_id[base_name],
+                            "type": "inherits",
+                        })
+            
+            # Extract methods
+            for item in node.body:
+                if isinstance(item, (ast_module.FunctionDef, ast_module.AsyncFunctionDef)):
+                    method_id = make_id()
+                    full_name = f"{node.name}.{item.name}"
+                    name_to_id[full_name] = method_id
+                    name_to_id[item.name] = method_id  # Also map short name
+                    class_methods[node.name].append(method_id)
+                    
+                    nodes.append({
+                        "id": method_id,
+                        "type": "method",
+                        "name": item.name,
+                        "fullName": full_name,
+                        "lineno": item.lineno,
+                        "docstring": ast_module.get_docstring(item),
+                        "signature": _build_signature_simple(item),
+                    })
+                    edges.append({
+                        "source": class_id,
+                        "target": method_id,
+                        "type": "has_method",
+                    })
+        
+        elif isinstance(node, (ast_module.FunctionDef, ast_module.AsyncFunctionDef)):
+            func_id = make_id()
+            name_to_id[node.name] = func_id
+            
+            nodes.append({
+                "id": func_id,
+                "type": "function",
+                "name": node.name,
+                "lineno": node.lineno,
+                "docstring": ast_module.get_docstring(node),
+                "signature": _build_signature_simple(node),
+            })
+            edges.append({
+                "source": mod_id,
+                "target": func_id,
+                "type": "contains",
+            })
+    
+    # Second pass: extract function calls
+    for node in ast_module.walk(tree):
+        if isinstance(node, (ast_module.FunctionDef, ast_module.AsyncFunctionDef)):
+            caller_name = node.name
+            # Find the caller's ID (could be method or function)
+            caller_id = None
+            for n in nodes:
+                if n["name"] == caller_name and n["type"] in ("function", "method"):
+                    caller_id = n["id"]
+                    break
+            
+            if caller_id:
+                # Find all calls within this function
+                for child in ast_module.walk(node):
+                    if isinstance(child, ast_module.Call):
+                        callee_name = None
+                        if isinstance(child.func, ast_module.Name):
+                            callee_name = child.func.id
+                        elif isinstance(child.func, ast_module.Attribute):
+                            callee_name = child.func.attr
+                        
+                        if callee_name and callee_name in name_to_id:
+                            callee_id = name_to_id[callee_name]
+                            # Avoid self-loops and duplicates
+                            if callee_id != caller_id:
+                                edge_exists = any(
+                                    e["source"] == caller_id and 
+                                    e["target"] == callee_id and 
+                                    e["type"] == "calls"
+                                    for e in edges
+                                )
+                                if not edge_exists:
+                                    edges.append({
+                                        "source": caller_id,
+                                        "target": callee_id,
+                                        "type": "calls",
+                                    })
+    
+    return {"nodes": nodes, "edges": edges}
+
+
+def _build_signature_simple(node) -> str:
+    """Build a simple signature string for a function node."""
+    import ast as ast_module
+    prefix = "async def" if isinstance(node, ast_module.AsyncFunctionDef) else "def"
+    params = []
+    for arg in node.args.args:
+        params.append(arg.arg)
+    return f"{prefix} {node.name}({', '.join(params)})"
+
+
+@router.get("/analyses/{analysis_id}/graph")
+def get_analysis_graph(
+    analysis_id: str, db: Session = Depends(get_db)
+) -> dict:
+    """Return a knowledge graph representation of the analyzed code.
+    
+    The graph includes:
+    - Nodes: modules, classes, functions, methods, imports
+    - Edges: contains, has_method, calls, imports, inherits
+    
+    Also includes claims and violations linked to their functions.
+    """
+    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Extract code structure graph
+    graph = _extract_code_graph(analysis.source_code, analysis.language)
+    
+    # Add claims and violations from the database
+    functions = (
+        db.query(FunctionRecord)
+        .filter(FunctionRecord.analysis_id == analysis_id)
+        .options(joinedload(FunctionRecord.claims).joinedload(Claim.violation))
+        .all()
+    )
+    
+    # Map function names to graph node IDs
+    func_name_to_node = {}
+    for node in graph["nodes"]:
+        if node["type"] in ("function", "method"):
+            func_name_to_node[node["name"]] = node["id"]
+    
+    # Add claim and violation nodes
+    node_counter = len(graph["nodes"])
+    for func in functions:
+        func_node_id = func_name_to_node.get(func.name)
+        
+        for claim in func.claims:
+            node_counter += 1
+            claim_id = f"c{node_counter}"
+            
+            graph["nodes"].append({
+                "id": claim_id,
+                "type": "claim",
+                "name": claim.raw_text[:50] + "..." if len(claim.raw_text) > 50 else claim.raw_text,
+                "category": claim.category,
+                "fullText": claim.raw_text,
+                "lineno": claim.source_line,
+            })
+            
+            if func_node_id:
+                graph["edges"].append({
+                    "source": func_node_id,
+                    "target": claim_id,
+                    "type": "has_claim",
+                })
+            
+            # Add violation if exists
+            if claim.violation:
+                node_counter += 1
+                violation_id = f"v{node_counter}"
+                
+                graph["nodes"].append({
+                    "id": violation_id,
+                    "type": "violation",
+                    "name": f"{claim.category} Violation",
+                    "outcome": claim.violation.outcome,
+                    "category": claim.category,
+                })
+                
+                graph["edges"].append({
+                    "source": claim_id,
+                    "target": violation_id,
+                    "type": "violated_by",
+                })
+    
+    return {
+        "analysisId": analysis_id,
+        "language": analysis.language,
+        "graph": graph,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/analyses/{id}/doc-health — Documentation health metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/analyses/{analysis_id}/doc-health")
+def get_doc_health(
+    analysis_id: str, db: Session = Depends(get_db)
+) -> dict:
+    """Return documentation health metrics for an analysis.
+    
+    Metrics include:
+    - Documentation coverage (% of functions with docstrings)
+    - Claim density (avg claims per documented function)
+    - Violation rate (% of claims that failed)
+    - Per-function breakdown
+    """
+    analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    
+    # Parse source to count all functions (including undocumented)
+    all_functions = _count_all_functions(analysis.source_code, analysis.language)
+    
+    # Get documented functions from DB
+    functions = (
+        db.query(FunctionRecord)
+        .filter(FunctionRecord.analysis_id == analysis_id)
+        .options(joinedload(FunctionRecord.claims).joinedload(Claim.violation))
+        .all()
+    )
+    
+    documented_count = len(functions)
+    total_functions = max(all_functions, documented_count)
+    
+    # Calculate metrics
+    coverage = documented_count / total_functions if total_functions > 0 else 0
+    
+    total_claims = sum(len(f.claims) for f in functions)
+    total_violations = sum(
+        1 for f in functions 
+        for c in f.claims 
+        if c.violation and c.violation.outcome == "fail"
+    )
+    
+    claim_density = total_claims / documented_count if documented_count > 0 else 0
+    violation_rate = total_violations / total_claims if total_claims > 0 else 0
+    
+    # Per-function breakdown
+    function_health = []
+    for func in functions:
+        func_claims = len(func.claims)
+        func_violations = sum(
+            1 for c in func.claims 
+            if c.violation and c.violation.outcome == "fail"
+        )
+        
+        # Calculate health score (0-100)
+        if func_claims == 0:
+            health_score = 50  # No claims = neutral
+        else:
+            health_score = int(100 * (1 - func_violations / func_claims))
+        
+        function_health.append({
+            "id": func.id,
+            "name": func.name,
+            "signature": func.signature,
+            "hasDocstring": bool(func.docstring),
+            "docstringLength": len(func.docstring) if func.docstring else 0,
+            "claimCount": func_claims,
+            "violationCount": func_violations,
+            "healthScore": health_score,
+            "categories": list(set(c.category for c in func.claims)),
+        })
+    
+    # Sort by health score (worst first)
+    function_health.sort(key=lambda x: x["healthScore"])
+    
+    # Undocumented functions count
+    undocumented_count = total_functions - documented_count
+    
+    # Overall health score
+    if total_functions == 0:
+        overall_health = 0
+    else:
+        # Weighted: 40% coverage, 30% claim density (capped), 30% violation rate
+        coverage_score = coverage * 100
+        density_score = min(claim_density / 3, 1) * 100  # 3+ claims = max
+        violation_score = (1 - violation_rate) * 100
+        overall_health = int(0.4 * coverage_score + 0.3 * density_score + 0.3 * violation_score)
+    
+    return {
+        "analysisId": analysis_id,
+        "overallHealth": overall_health,
+        "metrics": {
+            "totalFunctions": total_functions,
+            "documentedFunctions": documented_count,
+            "undocumentedFunctions": undocumented_count,
+            "coverage": round(coverage * 100, 1),
+            "totalClaims": total_claims,
+            "totalViolations": total_violations,
+            "claimDensity": round(claim_density, 2),
+            "violationRate": round(violation_rate * 100, 1),
+        },
+        "functions": function_health,
+    }
+
+
+def _count_all_functions(source_code: str, language: str) -> int:
+    """Count all functions in source code, including undocumented ones."""
+    import ast as ast_module
+    
+    if language != "python":
+        # For non-Python, use a simple heuristic
+        # Count lines that look like function definitions
+        count = 0
+        for line in source_code.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("def ") or stripped.startswith("async def "):
+                count += 1
+            elif language in ("javascript", "typescript"):
+                if "function " in stripped or "=>" in stripped:
+                    count += 1
+        return max(count, 1)
+    
+    try:
+        tree = ast_module.parse(source_code)
+    except SyntaxError:
+        return 1
+    
+    count = 0
+    for node in ast_module.walk(tree):
+        if isinstance(node, (ast_module.FunctionDef, ast_module.AsyncFunctionDef)):
+            count += 1
+    
+    return count

@@ -1,4 +1,4 @@
-import { FileText, ShieldCheck, BookOpen } from "lucide-react";
+import { FileText, ShieldCheck, BookOpen, Network, HeartPulse } from "lucide-react";
 import { AnimatedTabs } from "@/components/ui";
 import { type Analysis, type DashboardTab } from "@/types";
 
@@ -12,7 +12,9 @@ interface TabNavigationProps {
 const TABS: { id: DashboardTab; label: string; icon: React.ReactNode }[] = [
   { id: "documentation", label: "Documentation", icon: <FileText className="h-4 w-4" /> },
   { id: "verification",  label: "Verification",  icon: <ShieldCheck className="h-4 w-4" /> },
-  { id: "research",      label: "Research",       icon: <BookOpen className="h-4 w-4" /> },
+  { id: "graph",         label: "Graph",         icon: <Network className="h-4 w-4" /> },
+  { id: "health",        label: "Health",        icon: <HeartPulse className="h-4 w-4" /> },
+  { id: "research",      label: "Research",      icon: <BookOpen className="h-4 w-4" /> },
 ];
 
 export default function TabNavigation({

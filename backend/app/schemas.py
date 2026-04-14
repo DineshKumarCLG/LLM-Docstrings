@@ -38,7 +38,7 @@ class LLMProvider(str, Enum):
 
     GPT4_1_MINI = "gpt-4.1-mini"
     CLAUDE_SONNET = "claude-sonnet-4-20250514"
-    GEMINI_FLASH = "gemini-3-flash-preview"
+    GEMINI_FLASH = "gemma-4-31b-it"
     BEDROCK = "bedrock"
 
 

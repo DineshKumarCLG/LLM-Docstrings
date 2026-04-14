@@ -9,7 +9,7 @@ import type { LLMProvider, SupportedLanguage, FileWithPath } from "@/types";
 import FolderPicker from "./FolderPicker";
 
 const LLM_OPTIONS: { value: LLMProvider; label: string; badge?: string }[] = [
-  { value: "gemini-3-flash-preview",   label: "Gemini 3 Flash",  badge: "Recommended" },
+  { value: "gemma-4-31b-it",   label: "Gemma 4 31B",  badge: "Recommended" },
   { value: "gpt-4.1-mini",             label: "GPT-4.1 Mini" },
   { value: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
   { value: "bedrock",                  label: "Claude via Bedrock" },
@@ -44,7 +44,7 @@ export default function FileUploader() {
   const [mode, setMode] = useState<UploadMode>("file");
   const [file, setFile] = useState<File | null>(null);
   const [sourceCode, setSourceCode] = useState("");
-  const [llmProvider, setLlmProvider] = useState<LLMProvider>("gemini-3-flash-preview");
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>("gemma-4-31b-it");
   const [dragOver, setDragOver] = useState(false);
   const [folderFiles, setFolderFiles] = useState<FileWithPath[]>([]);
 

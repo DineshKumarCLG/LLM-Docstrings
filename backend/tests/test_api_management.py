@@ -248,16 +248,16 @@ class TestRerunAnalysis:
         session.close()
 
     def test_rerun_with_different_provider(self, client):
-        aid = _seed_analysis(llm_provider="gpt-4o")
+        aid = _seed_analysis(llm_provider="gpt-4.1-mini")
         resp = client.post(
             f"/api/analyses/{aid}/rerun",
-            params={"llm_provider": "claude-3-5-sonnet"},
+            params={"llm_provider": "claude-sonnet-4-20250514"},
         )
         assert resp.status_code == 202
 
         session = _TestingSession()
         analysis = session.query(Analysis).filter_by(id=aid).first()
-        assert analysis.llm_provider == "claude-3-5-sonnet"
+        assert analysis.llm_provider == "claude-sonnet-4-20250514"
         session.close()
 
     def test_rerun_not_found(self, client):
