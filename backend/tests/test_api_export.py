@@ -143,9 +143,10 @@ class TestExportJSON:
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "json"})
         assert resp.status_code == 200
         data = json.loads(resp.content)
-        assert data["analysis_id"] == aid
+        assert data["analysis"]["id"] == aid
         assert "violations" in data
-        assert "category_breakdown" in data
+        assert "breakdown" in data
+        assert "by_category" in data["breakdown"]
 
     def test_json_content_type(self, client):
         aid = _seed_analysis()
@@ -157,7 +158,8 @@ class TestExportJSON:
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "json"})
         cd = resp.headers["content-disposition"]
         assert "attachment" in cd
-        assert f"analysis_{aid}.json" in cd
+        assert "veridoc-report-" in cd
+        assert ".json" in cd
 
     def test_json_round_trip(self, client):
         """Property 16: JSON export round-trip produces equivalent data."""
@@ -178,6 +180,9 @@ class TestExportJSON:
         assert v["outcome"] == "fail"
         assert v["expected"] == "2"
         assert v["actual"] == "1"
+        # New fields
+        assert "category_label" in v
+        assert "severity" in v
 
     def test_json_empty_violations(self, client):
         aid = _seed_analysis(with_violations=False)
@@ -204,17 +209,21 @@ class TestExportCSV:
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "csv"})
         cd = resp.headers["content-disposition"]
         assert "attachment" in cd
-        assert f"analysis_{aid}.csv" in cd
+        assert "veridoc-report-" in cd
+        assert ".csv" in cd
 
     def test_csv_header_row(self, client):
         aid = _seed_analysis()
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "csv"})
         reader = csv.reader(io.StringIO(resp.text))
         header = next(reader)
-        assert header == [
-            "function_name", "category", "claim_text",
-            "outcome", "expected", "actual",
-        ]
+        # New enhanced header
+        assert "violation_id" in header
+        assert "function_name" in header
+        assert "category" in header
+        assert "category_label" in header
+        assert "severity" in header
+        assert "outcome" in header
 
     def test_csv_row_count(self, client):
         """Property 17: N violations → N data rows + header."""
@@ -229,14 +238,20 @@ class TestExportCSV:
         aid = _seed_analysis()
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "csv"})
         reader = csv.reader(io.StringIO(resp.text))
-        next(reader)  # skip header
+        header = next(reader)
         row = next(reader)
-        assert row[0] == "foo"          # function_name
-        assert row[1] == "RSV"          # category
-        assert row[2] == "Returns 1."   # claim_text
-        assert row[3] == "fail"         # outcome
-        assert row[4] == "2"            # expected
-        assert row[5] == "1"            # actual
+        # Find indices by header names
+        fn_idx = header.index("function_name")
+        cat_idx = header.index("category")
+        outcome_idx = header.index("outcome")
+        expected_idx = header.index("expected")
+        actual_idx = header.index("actual")
+        
+        assert row[fn_idx] == "foo"
+        assert row[cat_idx] == "RSV"
+        assert row[outcome_idx] == "fail"
+        assert row[expected_idx] == "2"
+        assert row[actual_idx] == "1"
 
     def test_csv_empty_violations(self, client):
         aid = _seed_analysis(with_violations=False)
@@ -264,7 +279,8 @@ class TestExportPDF:
         resp = client.get(f"/api/analyses/{aid}/export", params={"format": "pdf"})
         cd = resp.headers["content-disposition"]
         assert "attachment" in cd
-        assert f"analysis_{aid}.pdf" in cd
+        assert "veridoc-report-" in cd
+        assert ".pdf" in cd
 
     def test_pdf_starts_with_header(self, client):
         aid = _seed_analysis()

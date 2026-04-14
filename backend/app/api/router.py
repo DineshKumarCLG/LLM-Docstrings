@@ -18,6 +18,7 @@ import time
 import uuid
 import zipfile
 from collections import defaultdict
+from datetime import datetime
 import os
 from typing import Optional
 
@@ -827,20 +828,59 @@ def export_analysis(
 def _build_violation_dicts(
     rows: list[tuple[Violation, Claim, FunctionRecord]],
 ) -> list[dict]:
-    """Convert DB rows into serializable violation dicts."""
+    """Convert DB rows into comprehensive serializable violation dicts."""
     result = []
     for violation, claim, func in rows:
         result.append(
             {
                 "function_name": func.name,
+                "function_signature": func.signature or "",
                 "category": claim.category,
+                "category_label": _get_category_label(claim.category),
                 "claim_text": claim.raw_text,
+                "claim_subject": claim.subject or "",
+                "claim_predicate": claim.predicate_object or "",
+                "claim_condition": claim.conditionality or "",
                 "outcome": violation.outcome,
                 "expected": violation.expected or "",
                 "actual": violation.actual or "",
+                "test_code": violation.test_code or "",
+                "traceback": violation.traceback or "",
+                "severity": _get_severity(claim.category),
             }
         )
     return result
+
+
+def _get_category_label(category: str) -> str:
+    """Get human-readable label for BCV category."""
+    labels = {
+        "B1": "Incorrect Return Value",
+        "B2": "Missing Exception",
+        "B3": "Wrong Exception Type",
+        "B4": "Incorrect Side Effect",
+        "B5": "Missing Side Effect",
+        "C1": "Incorrect Precondition",
+        "C2": "Missing Precondition",
+        "C3": "Incorrect Postcondition",
+        "C4": "Missing Postcondition",
+        "V1": "Type Mismatch",
+        "V2": "Range Violation",
+        "V3": "Format Violation",
+        "V4": "Constraint Violation",
+    }
+    return labels.get(category, category)
+
+
+def _get_severity(category: str) -> str:
+    """Get severity level for BCV category."""
+    high = {"B1", "B2", "B3", "C1", "C3"}
+    medium = {"B4", "B5", "C2", "C4", "V1"}
+    if category in high:
+        return "high"
+    elif category in medium:
+        return "medium"
+    return "low"
 
 
 # -- JSON export (Requirement 7.1) ------------------------------------------
@@ -853,27 +893,53 @@ def _export_json(
 ) -> Response:
     violations = _build_violation_dicts(rows)
     category_breakdown: dict[str, int] = defaultdict(int)
+    severity_breakdown: dict[str, int] = defaultdict(int)
     for v in violations:
         category_breakdown[v["category"]] += 1
+        severity_breakdown[v["severity"]] += 1
+
+    # Get unique functions with violations
+    functions_with_violations = list(set(v["function_name"] for v in violations))
 
     report = {
-        "analysis_id": analysis_id,
-        "filename": analysis.filename,
-        "llm_provider": analysis.llm_provider,
-        "status": analysis.status,
-        "total_functions": analysis.total_functions,
-        "total_claims": analysis.total_claims,
-        "total_violations": analysis.total_violations,
-        "bcv_rate": analysis.bcv_rate,
-        "category_breakdown": dict(category_breakdown),
+        "report_metadata": {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "report_version": "2.0",
+            "tool": "VeriDoc",
+            "tool_version": "1.0.0",
+        },
+        "analysis": {
+            "id": analysis_id,
+            "filename": analysis.filename,
+            "language": analysis.language or "python",
+            "llm_provider": analysis.llm_provider,
+            "status": analysis.status,
+            "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
+            "completed_at": analysis.completed_at.isoformat() if analysis.completed_at else None,
+        },
+        "summary": {
+            "total_functions": analysis.total_functions,
+            "total_claims": analysis.total_claims,
+            "total_violations": analysis.total_violations,
+            "bcv_rate": round(analysis.bcv_rate, 4) if analysis.bcv_rate else 0,
+            "bcv_rate_percentage": f"{(analysis.bcv_rate or 0) * 100:.1f}%",
+            "functions_with_violations": len(functions_with_violations),
+            "pass_rate": f"{(1 - (analysis.bcv_rate or 0)) * 100:.1f}%",
+        },
+        "breakdown": {
+            "by_category": dict(category_breakdown),
+            "by_severity": dict(severity_breakdown),
+            "category_labels": {cat: _get_category_label(cat) for cat in category_breakdown.keys()},
+        },
         "violations": violations,
+        "affected_functions": functions_with_violations,
     }
-    content = json.dumps(report, indent=2)
+    content = json.dumps(report, indent=2, ensure_ascii=False)
     return Response(
         content=content,
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="analysis_{analysis_id}.json"'
+            "Content-Disposition": f'attachment; filename="veridoc-report-{analysis_id[:8]}.json"'
         },
     )
 
@@ -887,26 +953,48 @@ def _export_csv(
 ) -> Response:
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(
-        ["function_name", "category", "claim_text", "outcome", "expected", "actual"]
-    )
-    for violation, claim, func in rows:
-        writer.writerow(
-            [
-                func.name,
-                claim.category,
-                claim.raw_text,
-                violation.outcome,
-                violation.expected or "",
-                violation.actual or "",
-            ]
-        )
+    # Enhanced header with more useful columns
+    writer.writerow([
+        "violation_id",
+        "function_name",
+        "function_signature",
+        "category",
+        "category_label",
+        "severity",
+        "claim_text",
+        "claim_subject",
+        "claim_predicate", 
+        "claim_condition",
+        "outcome",
+        "expected",
+        "actual",
+        "has_test_code",
+        "has_traceback",
+    ])
+    for i, (violation, claim, func) in enumerate(rows, 1):
+        writer.writerow([
+            i,
+            func.name,
+            func.signature or "",
+            claim.category,
+            _get_category_label(claim.category),
+            _get_severity(claim.category),
+            claim.raw_text,
+            claim.subject or "",
+            claim.predicate_object or "",
+            claim.conditionality or "",
+            violation.outcome,
+            violation.expected or "",
+            violation.actual or "",
+            "yes" if violation.test_code else "no",
+            "yes" if violation.traceback else "no",
+        ])
     content = buf.getvalue()
     return Response(
         content=content,
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="analysis_{analysis_id}.csv"'
+            "Content-Disposition": f'attachment; filename="veridoc-report-{analysis_id[:8]}.csv"'
         },
     )
 
@@ -919,47 +1007,146 @@ def _export_pdf(
     rows: list[tuple[Violation, Claim, FunctionRecord]],
     analysis_id: str,
 ) -> Response:
-    """Generate a minimal text-based PDF report.
+    """Generate a comprehensive PDF report with professional formatting.
 
-    Uses a simple, dependency-free PDF structure with summary stats and
-    violation details.  No external libraries required.
+    Uses a simple, dependency-free PDF structure with:
+    - Executive summary
+    - Detailed statistics
+    - Category breakdown
+    - Full violation details
     """
     lines: list[str] = []
-    lines.append(f"VeriDoc Analysis Report — {analysis_id}")
+    
+    # Header
+    lines.append("=" * 70)
+    lines.append("                    VERIDOC ANALYSIS REPORT")
+    lines.append("=" * 70)
     lines.append("")
-    lines.append(f"Filename:         {analysis.filename or 'N/A'}")
-    lines.append(f"LLM Provider:     {analysis.llm_provider}")
-    lines.append(f"Status:           {analysis.status}")
-    lines.append(f"Total Functions:  {analysis.total_functions}")
-    lines.append(f"Total Claims:     {analysis.total_claims}")
-    lines.append(f"Total Violations: {analysis.total_violations}")
-    lines.append(f"BCV Rate:         {analysis.bcv_rate:.2%}")
+    lines.append(f"Report ID:        {analysis_id}")
+    lines.append(f"Generated:        {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append("")
+    
+    # Executive Summary Section
+    lines.append("-" * 70)
+    lines.append("                       EXECUTIVE SUMMARY")
+    lines.append("-" * 70)
+    lines.append("")
+    lines.append(f"  File Analyzed:      {analysis.filename or 'Code Paste'}")
+    lines.append(f"  Language:           {analysis.language or 'Python'}")
+    lines.append(f"  LLM Provider:       {analysis.llm_provider}")
+    lines.append(f"  Analysis Status:    {analysis.status.upper()}")
+    lines.append("")
+    
+    bcv_rate = analysis.bcv_rate or 0
+    pass_rate = (1 - bcv_rate) * 100
+    
+    lines.append("  METRICS:")
+    lines.append(f"    - Functions Analyzed:     {analysis.total_functions}")
+    lines.append(f"    - Claims Extracted:       {analysis.total_claims}")
+    lines.append(f"    - Violations Detected:    {analysis.total_violations}")
+    lines.append(f"    - BCV Rate:               {bcv_rate:.1%}")
+    lines.append(f"    - Documentation Accuracy: {pass_rate:.1f}%")
+    lines.append("")
+    
+    # Risk Assessment
+    if bcv_rate == 0:
+        risk_level = "LOW"
+        risk_desc = "No violations detected. Documentation appears accurate."
+    elif bcv_rate < 0.1:
+        risk_level = "LOW"
+        risk_desc = "Minor documentation issues detected."
+    elif bcv_rate < 0.3:
+        risk_level = "MEDIUM"
+        risk_desc = "Several documentation inconsistencies found."
+    else:
+        risk_level = "HIGH"
+        risk_desc = "Significant documentation issues require attention."
+    
+    lines.append(f"  RISK ASSESSMENT:    {risk_level}")
+    lines.append(f"    {risk_desc}")
     lines.append("")
 
-    # Category breakdown
+    # Category Breakdown Section
     category_counts: dict[str, int] = defaultdict(int)
+    severity_counts: dict[str, int] = defaultdict(int)
     for _v, claim, _f in rows:
         category_counts[claim.category] += 1
+        severity_counts[_get_severity(claim.category)] += 1
 
     if category_counts:
-        lines.append("Category Breakdown:")
+        lines.append("-" * 70)
+        lines.append("                     VIOLATION BREAKDOWN")
+        lines.append("-" * 70)
+        lines.append("")
+        
+        # By Severity
+        lines.append("  BY SEVERITY:")
+        for sev in ["high", "medium", "low"]:
+            count = severity_counts.get(sev, 0)
+            if count > 0:
+                bar = "#" * min(count * 2, 30)
+                lines.append(f"    {sev.upper():8} {count:3}  {bar}")
+        lines.append("")
+        
+        # By Category
+        lines.append("  BY CATEGORY:")
         for cat, count in sorted(category_counts.items()):
-            lines.append(f"  {cat}: {count}")
+            label = _get_category_label(cat)
+            severity = _get_severity(cat)
+            lines.append(f"    [{cat}] {label}")
+            lines.append(f"          Count: {count}  |  Severity: {severity.upper()}")
         lines.append("")
 
-    # Violation details
+    # Violation Details Section
     if rows:
-        lines.append("Violation Details:")
-        lines.append("-" * 60)
+        lines.append("-" * 70)
+        lines.append("                     VIOLATION DETAILS")
+        lines.append("-" * 70)
+        lines.append("")
+        
         for i, (violation, claim, func) in enumerate(rows, 1):
-            lines.append(f"  #{i}  {func.name} [{claim.category}]")
-            lines.append(f"      Claim:    {claim.raw_text}")
-            lines.append(f"      Outcome:  {violation.outcome}")
-            lines.append(f"      Expected: {violation.expected or 'N/A'}")
-            lines.append(f"      Actual:   {violation.actual or 'N/A'}")
+            severity = _get_severity(claim.category)
+            severity_marker = {"high": "!!!", "medium": "!!", "low": "!"}.get(severity, "")
+            
+            lines.append(f"  VIOLATION #{i} {severity_marker}")
+            lines.append(f"  " + "~" * 50)
+            lines.append(f"    Function:     {func.name}")
+            if func.signature:
+                # Truncate long signatures
+                sig = func.signature[:60] + "..." if len(func.signature) > 60 else func.signature
+                lines.append(f"    Signature:    {sig}")
+            lines.append(f"    Category:     [{claim.category}] {_get_category_label(claim.category)}")
+            lines.append(f"    Severity:     {severity.upper()}")
+            lines.append("")
+            lines.append(f"    CLAIM:")
+            # Word wrap claim text
+            claim_text = claim.raw_text or ""
+            for line in _wrap_text(claim_text, 60):
+                lines.append(f"      {line}")
+            lines.append("")
+            lines.append(f"    OUTCOME:      {violation.outcome}")
+            if violation.expected:
+                lines.append(f"    EXPECTED:     {violation.expected[:80]}")
+            if violation.actual:
+                lines.append(f"    ACTUAL:       {violation.actual[:80]}")
             lines.append("")
     else:
-        lines.append("No violations found.")
+        lines.append("-" * 70)
+        lines.append("                       NO VIOLATIONS")
+        lines.append("-" * 70)
+        lines.append("")
+        lines.append("  Congratulations! No violations were detected in this analysis.")
+        lines.append("  The documentation appears to accurately describe the code behavior.")
+        lines.append("")
+
+    # Footer
+    lines.append("=" * 70)
+    lines.append("                         END OF REPORT")
+    lines.append("=" * 70)
+    lines.append("")
+    lines.append("  Generated by VeriDoc - Behavioral Claim Verification Tool")
+    lines.append("  For more information, visit the documentation.")
+    lines.append("")
 
     text_body = "\n".join(lines)
     pdf_bytes = _text_to_pdf(text_body)
@@ -968,9 +1155,32 @@ def _export_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="analysis_{analysis_id}.pdf"'
+            "Content-Disposition": f'attachment; filename="veridoc-report-{analysis_id[:8]}.pdf"'
         },
     )
+
+
+def _wrap_text(text: str, width: int) -> list[str]:
+    """Simple word wrap for text."""
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+    
+    for word in words:
+        if current_length + len(word) + 1 <= width:
+            current_line.append(word)
+            current_length += len(word) + 1
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+            current_length = len(word)
+    
+    if current_line:
+        lines.append(" ".join(current_line))
+    
+    return lines if lines else [""]
 
 
 def _text_to_pdf(text: str) -> bytes:
