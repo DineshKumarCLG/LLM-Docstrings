@@ -97,4 +97,27 @@ export const analysisApi = {
   getDocHealth: (id: string) => api.get<DocHealthResponse>(`/analyses/${id}/doc-health`),
 };
 
+export const ragApi = {
+  /** Index codebase into RAG vector store. */
+  index: (files?: Record<string, string>) =>
+    api.post<{ status: string; indexed_files: number; indexed_chunks: number }>("/rag/index", { files }),
+
+  /** Execute RAG search query with re-ranking & citation enforcement. */
+  query: (payload: {
+    query: string;
+    dense_weight?: number;
+    top_k_retrieval?: number;
+    top_k_rerank?: number;
+    llm_provider?: string;
+    ground_truth?: string;
+  }) => api.post<import("@/types").RAGQueryResult>("/rag/query", payload),
+
+  /** Run RAG evaluation benchmark dataset. */
+  eval: (dataset: Array<Record<string, any>>) =>
+    api.post<Record<string, any>>("/rag/eval", { dataset }),
+
+  /** Get RAG vector index & evaluation statistics. */
+  getStats: () => api.get<import("@/types").RAGStats>("/rag/stats"),
+};
+
 export default api;

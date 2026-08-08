@@ -336,3 +336,62 @@ export interface DocHealthResponse {
   metrics: DocHealthMetrics;
   functions: FunctionHealth[];
 }
+
+// ---------------------------------------------------------------------------
+// RAG & Evaluation Interfaces
+// ---------------------------------------------------------------------------
+
+export interface RAGChunk {
+  chunk_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  function_name?: string;
+  docstring?: string;
+  content: string;
+  initial_score?: number;
+  rerank_score?: number;
+}
+
+export interface RAGCitationsStat {
+  total_citations: number;
+  valid_citations: number;
+  uncited_paragraphs: number;
+  compliance_rate: number;
+  is_compliant: boolean;
+}
+
+export interface RAGEvalMetrics {
+  query: string;
+  faithfulness: number;
+  context_precision: number;
+  context_recall: number;
+  answer_relevance: number;
+  citation_compliance: number;
+  overall_rag_score: number;
+  total_chunks_retrieved: number;
+  citations_stat: RAGCitationsStat;
+}
+
+export interface RAGQueryResult {
+  query: string;
+  answer: string;
+  retrieved_chunks: RAGChunk[];
+  reranked_chunks: RAGChunk[];
+  citations: RAGCitationsStat;
+  evaluation: RAGEvalMetrics | null;
+}
+
+export interface RAGStats {
+  status: string;
+  total_chunks: number;
+  files_indexed: number;
+  indexed_file_list: string[];
+  total_queries_evaluated: number;
+  metrics_summary: {
+    average_overall_rag_score: number;
+    average_faithfulness: number;
+    average_citation_compliance: number;
+  };
+  recent_evaluations: RAGEvalMetrics[];
+}

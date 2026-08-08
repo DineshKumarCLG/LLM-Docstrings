@@ -4,6 +4,7 @@ import DashboardHome from "@/pages/DashboardHome";
 import AnalysisDetail from "@/pages/AnalysisDetail";
 import CodeViewerPage from "@/pages/CodeViewerPage";
 import ProjectRunPage from "@/pages/ProjectRunPage";
+import { RAGWorkspace } from "@/pages/RAGWorkspace";
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<DashboardHome />} />
         <Route path="/upload" element={<FileUploader />} />
+        <Route path="/rag" element={<RAGWorkspace />} />
         <Route path="/analyses/:id" element={<AnalysisDetail />} />
         <Route path="/analyses/:id/code" element={<CodeViewerPage />} />
         <Route path="/analyses/:id/export" element={<CodeViewerPage />} />

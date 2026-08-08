@@ -248,6 +248,13 @@ Language is auto-detected from file extension (`.py`, `.js`, `.ts`, `.java`, `.g
 - Upload ZIP archives or multiple files for batch processing (up to 50 files, 20MB max)
 - Automatic language detection per file
 
+### RAG Subsystem & Evaluation Engine
+- **AST-Aware Chunking & Hybrid Search** — Extracts semantic function blocks, line numbers, and docstring claims. Combines dense TF-IDF vectors with `RankBM25` sparse keyword indexing.
+- **Cross-Encoder Re-ranking** — Re-ranks candidate code chunks using Cross-Encoder models (`cross-encoder/ms-marco-MiniLM-L-6-v2`) or multi-attribute feature scoring.
+- **Strict Citation Enforcement** — Enforces format `[Source: <filepath>:<start_line>-<end_line>]` in prompt templates and verifies that all generated assertions reference valid code line ranges.
+- **RAG Quality Evaluation Suite** — Automated evaluation engine measuring **Faithfulness**, **Context Precision**, **Context Recall**, **Answer Relevance**, and **Citation Compliance**.
+- **Interactive RAG Dashboard** — Web UI featuring dense/sparse retrieval sliders, interactive citation links, re-ranking controls, and quality scorecards.
+
 ### Security
 - Rate limiting (10 requests/minute per IP)
 - XSS sanitization on source code input

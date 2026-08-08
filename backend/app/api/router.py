@@ -27,6 +27,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.documentation import build_documentation_tree
+from app.api.rag_router import rag_api_router
 from app.config import settings
 from app.database import get_db
 from app.models import Analysis, Claim, FunctionRecord, Violation
@@ -36,6 +37,7 @@ from app.pipeline.parsers.registry import ParserRegistry
 from app.schemas import AnalysisStatus, LLMProvider
 
 router = APIRouter(prefix="/api")
+router.include_router(rag_api_router)
 
 
 # ---------------------------------------------------------------------------

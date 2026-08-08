@@ -102,12 +102,18 @@ export default function DashboardHome() {
               <p className="text-[9px] text-muted-foreground/50 font-medium tracking-widest uppercase leading-none mt-0.5">Behavioral Contract Verification</p>
             </div>
           </motion.div>
-          <Link to="/upload">
-            <ShimmerButton>
-              <Plus className="h-4 w-4" />
-              New Analysis
-            </ShimmerButton>
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link to="/rag" className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-xl transition-all">
+              <Layers className="h-3.5 w-3.5 text-indigo-400" />
+              RAG & Evaluation
+            </Link>
+            <Link to="/upload">
+              <ShimmerButton>
+                <Plus className="h-4 w-4" />
+                New Analysis
+              </ShimmerButton>
+            </Link>
+          </div>
         </div>
       </header>
 
