@@ -483,7 +483,8 @@ LLM-Docstrings/
 │   │   │   ├── router.py              # FastAPI REST endpoints
 │   │   │   └── documentation.py       # Documentation tree builder
 │   │   ├── cli/
-│   │   │   └── precommit.py           # Pre-commit hook CLI
+│   │   │   ├── precommit.py           # Pre-commit hook CLI
+│   │   │   └── rag_eval.py            # RAG interactive CLI & evaluation
 │   │   ├── pipeline/
 │   │   │   ├── bce/
 │   │   │   │   ├── extractor.py       # Behavioral Claim Extractor
@@ -522,7 +523,9 @@ LLM-Docstrings/
 │   │   ├── models.py                  # ORM models (Analysis, Function, Claim, Violation)
 │   │   └── schemas.py                 # Pydantic schemas & BCV taxonomy enums
 │   ├── alembic/                       # Database migrations
-│   ├── tests/                         # 28 test modules (unit + integration + property-based)
+│   ├── eval/                          # Retrieval evaluation suite (Hit@k, MRR)
+│   │   └── run_retrieval_eval.py
+│   ├── tests/                         # 29 test modules (unit + integration + property-based + RAG)
 │   ├── pyproject.toml                 # Python project config
 │   └── .env.example                   # Environment variable template
 ├── frontend/
@@ -611,6 +614,42 @@ Or use the installed CLI entry point:
 ```bash
 veridoc-check path/to/file.py
 ```
+
+---
+
+## RAG CLI & Retrieval Evaluation
+
+### Interactive RAG CLI
+
+Run grounded RAG queries, inspect hybrid retrieval vector scores, reranking weights, and heuristic quality metrics directly in your terminal:
+
+```bash
+cd backend
+
+# Interactive query against built-in BCV samples with verbose reranker breakdown
+python -m app.cli.rag_eval -v
+
+# Query specific source files
+python -m app.cli.rag_eval -f ../examples/sample_bcv.py -q "Does merge_dicts mutate its input?" -v
+
+# Custom dense/sparse weights and top-K settings
+python -m app.cli.rag_eval -f my_code.py -q "side effects?" -k 10 --rerank-k 3 -w 0.7
+```
+
+### Retrieval Evaluation Benchmark (Hit@k & MRR)
+
+Evaluate RAG retrieval accuracy against `examples/sample_bcv.py` across 20 direct and adversarial queries:
+
+```bash
+cd backend
+python eval/run_retrieval_eval.py
+```
+
+Measures standard Information Retrieval (IR) metrics:
+- **Hit@1**: Fraction of queries where the ground-truth target function is ranked #1
+- **Hit@3**: Fraction of queries where the target function appears in the top-3 results
+- **MRR (Mean Reciprocal Rank)**: Average of reciprocal ranks ($1 / \text{rank}$) across all queries
+
 
 ---
 
