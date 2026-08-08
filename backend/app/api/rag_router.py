@@ -22,7 +22,7 @@ class QueryRequest(BaseModel):
     top_k_retrieval: int = Field(default=5, ge=1, le=20, description="Number of initial candidate chunks retrieved")
     top_k_rerank: int = Field(default=3, ge=1, le=10, description="Number of chunks after re-ranking")
     llm_provider: str = Field(default="auto", description="LLM provider: 'auto', 'openai', 'google', 'anthropic'")
-    ground_truth: Optional[str] = Field(default=None, description="Optional ground truth answer for context recall evaluation")
+    ground_truth: Optional[str] = Field(default=None, description="Optional ground truth answer for coverage evaluation")
 
 
 class EvalDatasetRequest(BaseModel):
@@ -66,7 +66,7 @@ async def index_codebase(req: IndexRequest):
 
 @rag_api_router.post("/query")
 async def query_rag(req: QueryRequest):
-    """Execute RAG search query with Re-ranking, Citation Enforcement & Evaluation."""
+    """Execute RAG search query with Re-ranking, Citation Enforcement & Heuristic Evaluation."""
     try:
         result = rag_service.execute_rag_query(
             query=req.query,
@@ -83,7 +83,7 @@ async def query_rag(req: QueryRequest):
 
 @rag_api_router.post("/eval")
 async def evaluate_rag_benchmark(req: EvalDatasetRequest):
-    """Run RAG evaluation suite over a dataset of query-response pairs."""
+    """Run heuristic evaluation suite over a dataset of query-response pairs."""
     try:
         report = RAGEvaluator.run_benchmark_suite(req.dataset)
         return report
@@ -93,16 +93,16 @@ async def evaluate_rag_benchmark(req: EvalDatasetRequest):
 
 @rag_api_router.get("/stats")
 async def get_rag_stats():
-    """Retrieve RAG vector index statistics and evaluation history summary."""
+    """Retrieve RAG vector index statistics and heuristic evaluation history summary."""
     chunks = rag_service.indexer.chunks
     files_indexed = list(set(c.file_path for c in chunks))
     history = rag_service.evaluation_history
 
-    avg_rag_score = (
-        sum(h["overall_rag_score"] for h in history) / len(history) if history else 0.0
+    avg_composite = (
+        sum(h["composite_heuristic_score"] for h in history) / len(history) if history else 0.0
     )
-    avg_faithfulness = (
-        sum(h["faithfulness"] for h in history) / len(history) if history else 0.0
+    avg_grounding = (
+        sum(h["grounding_ratio"] for h in history) / len(history) if history else 0.0
     )
     avg_citation = (
         sum(h["citation_compliance"] for h in history) / len(history) if history else 0.0
@@ -115,8 +115,8 @@ async def get_rag_stats():
         "indexed_file_list": files_indexed,
         "total_queries_evaluated": len(history),
         "metrics_summary": {
-            "average_overall_rag_score": round(avg_rag_score, 4),
-            "average_faithfulness": round(avg_faithfulness, 4),
+            "average_composite_heuristic_score": round(avg_composite, 4),
+            "average_grounding_ratio": round(avg_grounding, 4),
             "average_citation_compliance": round(avg_citation, 4),
         },
         "recent_evaluations": history[-10:],

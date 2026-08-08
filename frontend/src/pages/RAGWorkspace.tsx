@@ -20,7 +20,7 @@ export const RAGWorkspace: React.FC = () => {
   const [indexing, setIndexing] = useState<boolean>(false);
 
   // Search state
-  const [query, setQuery] = useState<string>("Does normalize_list mutate arguments or return a new list?");
+  const [query, setQuery] = useState<string>("Does merge_dicts mutate its input dictionaries?");
   const [denseWeight, setDenseWeight] = useState<number>(0.6);
   const [topKRetrieval, setTopKRetrieval] = useState<number>(5);
   const [topKRerank, setTopKRerank] = useState<number>(3);
@@ -118,7 +118,7 @@ export const RAGWorkspace: React.FC = () => {
                 VeriDoc RAG & Evaluation Engine
               </h1>
               <p className="text-sm text-slate-400">
-                Hybrid Vector Retrieval, Cross-Encoder Re-ranking, Citation Enforcement & RAG Quality Metrics
+                Hybrid Retrieval, Cross-Encoder Re-ranking, Citation Enforcement & Heuristic Quality Metrics
               </p>
             </div>
           </div>
@@ -153,13 +153,13 @@ export const RAGWorkspace: React.FC = () => {
 
         <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-800">
           <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
-            <span>Avg Faithfulness</span>
+            <span>Avg Grounding</span>
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-2xl font-bold text-emerald-400 mt-2">
-            {stats ? `${(stats.metrics_summary.average_faithfulness * 100).toFixed(1)}%` : "N/A"}
+            {stats ? `${(stats.metrics_summary.average_grounding_ratio * 100).toFixed(1)}%` : "N/A"}
           </div>
-          <div className="text-xs text-slate-500 mt-1">Grounding consistency</div>
+          <div className="text-xs text-slate-500 mt-1">Term-overlap grounding ratio</div>
         </div>
 
         <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-800">
@@ -175,13 +175,13 @@ export const RAGWorkspace: React.FC = () => {
 
         <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-800">
           <div className="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase tracking-wider">
-            <span>Overall RAG Score</span>
+            <span>Composite Score</span>
             <Sparkles className="w-4 h-4 text-amber-400" />
           </div>
           <div className="text-2xl font-bold text-amber-400 mt-2">
-            {stats ? stats.metrics_summary.average_overall_rag_score.toFixed(3) : "N/A"}
+            {stats ? stats.metrics_summary.average_composite_heuristic_score.toFixed(3) : "N/A"}
           </div>
-          <div className="text-xs text-slate-500 mt-1">Composite benchmark rating</div>
+          <div className="text-xs text-slate-500 mt-1">Weighted heuristic composite</div>
         </div>
       </div>
 
@@ -355,37 +355,37 @@ export const RAGWorkspace: React.FC = () => {
                   <div className="bg-slate-900/70 p-5 rounded-2xl border border-slate-800 space-y-3">
                     <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
                       <BarChart3 className="w-4 h-4 text-amber-400" />
-                      <span>Real-time RAG Evaluation Metrics</span>
+                      <span>Heuristic Quality Metrics (term-overlap proxies)</span>
                     </div>
                     <div className="grid grid-cols-5 gap-2 text-center">
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Faithfulness</div>
+                        <div className="text-xs text-slate-400">Grounding</div>
                         <div className="text-sm font-bold text-emerald-400 mt-1">
-                          {(queryResult.evaluation.faithfulness * 100).toFixed(0)}%
+                          {(queryResult.evaluation.grounding_ratio * 100).toFixed(0)}%
                         </div>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Precision</div>
+                        <div className="text-xs text-slate-400">Hit Rate</div>
                         <div className="text-sm font-bold text-blue-400 mt-1">
-                          {(queryResult.evaluation.context_precision * 100).toFixed(0)}%
+                          {(queryResult.evaluation.retrieval_hit_rate * 100).toFixed(0)}%
                         </div>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Recall</div>
+                        <div className="text-xs text-slate-400">GT Coverage</div>
                         <div className="text-sm font-bold text-purple-400 mt-1">
-                          {(queryResult.evaluation.context_recall * 100).toFixed(0)}%
+                          {(queryResult.evaluation.ground_truth_coverage * 100).toFixed(0)}%
                         </div>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
-                        <div className="text-xs text-slate-400">Relevance</div>
+                        <div className="text-xs text-slate-400">Term Echo</div>
                         <div className="text-sm font-bold text-indigo-400 mt-1">
-                          {(queryResult.evaluation.answer_relevance * 100).toFixed(0)}%
+                          {(queryResult.evaluation.query_term_echo * 100).toFixed(0)}%
                         </div>
                       </div>
                       <div className="bg-slate-950 p-2.5 rounded-lg border border-amber-500/30">
-                        <div className="text-xs text-amber-400">Overall</div>
+                        <div className="text-xs text-amber-400">Composite</div>
                         <div className="text-sm font-bold text-amber-400 mt-1">
-                          {queryResult.evaluation.overall_rag_score.toFixed(3)}
+                          {queryResult.evaluation.composite_heuristic_score.toFixed(3)}
                         </div>
                       </div>
                     </div>
@@ -440,8 +440,8 @@ export const RAGWorkspace: React.FC = () => {
         <div className="bg-slate-900/70 p-6 rounded-2xl border border-slate-800 space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-white">RAG Evaluation Suite & Benchmark History</h2>
-              <p className="text-xs text-slate-400">Automated evaluation tracking Faithfulness, Context Precision/Recall, and Citation Compliance across query runs.</p>
+              <h2 className="text-lg font-bold text-white">Heuristic Evaluation History</h2>
+              <p className="text-xs text-slate-400">Term-overlap heuristic metrics tracking grounding ratio, retrieval hit rate, and citation compliance across query runs. These are NOT RAGAS/DeepEval LLM-as-judge metrics.</p>
             </div>
           </div>
 
@@ -451,22 +451,22 @@ export const RAGWorkspace: React.FC = () => {
                 <thead className="bg-slate-950 text-slate-400 uppercase font-semibold border-b border-slate-800">
                   <tr>
                     <th className="p-3">Query</th>
-                    <th className="p-3 text-center">Faithfulness</th>
-                    <th className="p-3 text-center">Context Precision</th>
-                    <th className="p-3 text-center">Citation Compliance</th>
-                    <th className="p-3 text-center">Relevance</th>
-                    <th className="p-3 text-center">Overall Score</th>
+                    <th className="p-3 text-center">Grounding</th>
+                    <th className="p-3 text-center">Hit Rate</th>
+                    <th className="p-3 text-center">Citation</th>
+                    <th className="p-3 text-center">Term Echo</th>
+                    <th className="p-3 text-center">Composite</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 text-slate-300">
                   {stats.recent_evaluations.map((item: any, idx: number) => (
                     <tr key={idx} className="hover:bg-slate-800/40">
                       <td className="p-3 font-medium text-slate-100 max-w-xs truncate">{item.query}</td>
-                      <td className="p-3 text-center font-mono text-emerald-400">{(item.faithfulness * 100).toFixed(0)}%</td>
-                      <td className="p-3 text-center font-mono text-blue-400">{(item.context_precision * 100).toFixed(0)}%</td>
+                      <td className="p-3 text-center font-mono text-emerald-400">{(item.grounding_ratio * 100).toFixed(0)}%</td>
+                      <td className="p-3 text-center font-mono text-blue-400">{(item.retrieval_hit_rate * 100).toFixed(0)}%</td>
                       <td className="p-3 text-center font-mono text-purple-400">{(item.citation_compliance * 100).toFixed(0)}%</td>
-                      <td className="p-3 text-center font-mono text-indigo-400">{(item.answer_relevance * 100).toFixed(0)}%</td>
-                      <td className="p-3 text-center font-mono font-bold text-amber-400">{item.overall_rag_score.toFixed(3)}</td>
+                      <td className="p-3 text-center font-mono text-indigo-400">{(item.query_term_echo * 100).toFixed(0)}%</td>
+                      <td className="p-3 text-center font-mono font-bold text-amber-400">{item.composite_heuristic_score.toFixed(3)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -363,12 +363,12 @@ export interface RAGCitationsStat {
 
 export interface RAGEvalMetrics {
   query: string;
-  faithfulness: number;
-  context_precision: number;
-  context_recall: number;
-  answer_relevance: number;
+  grounding_ratio: number;
+  retrieval_hit_rate: number;
+  ground_truth_coverage: number;
+  query_term_echo: number;
   citation_compliance: number;
-  overall_rag_score: number;
+  composite_heuristic_score: number;
   total_chunks_retrieved: number;
   citations_stat: RAGCitationsStat;
 }
@@ -389,8 +389,8 @@ export interface RAGStats {
   indexed_file_list: string[];
   total_queries_evaluated: number;
   metrics_summary: {
-    average_overall_rag_score: number;
-    average_faithfulness: number;
+    average_composite_heuristic_score: number;
+    average_grounding_ratio: number;
     average_citation_compliance: number;
   };
   recent_evaluations: RAGEvalMetrics[];

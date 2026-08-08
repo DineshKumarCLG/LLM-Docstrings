@@ -21,26 +21,39 @@ class Reranker:
     def rerank(
         self, query: str, candidate_chunks: List[Tuple[CodeChunk, float]], top_k: int = 3
     ) -> List[Tuple[CodeChunk, float]]:
-        """Reranks retrieved candidate chunks based on query alignment."""
+        """Reranks retrieved candidate chunks based on query alignment.
+
+        Returns list of (chunk, score) tuples where score ∈ [0, 1].
+        """
         if not candidate_chunks:
             return []
 
         chunks_only = [c for c, _ in candidate_chunks]
 
-        # Use CrossEncoder if available
+        # Use CrossEncoder if available — normalize raw logits to [0, 1] via min-max
         if self.cross_encoder is not None:
             try:
                 pairs = [[query, f"{c.file_path} {c.function_name or ''}\n{c.content}"] for c in chunks_only]
                 ce_scores = self.cross_encoder.predict(pairs)
-                reranked = [(chunks_only[i], float(ce_scores[i])) for i in range(len(chunks_only))]
+                min_s = min(ce_scores) if len(ce_scores) > 0 else 0.0
+                max_s = max(ce_scores) if len(ce_scores) > 0 else 1.0
+                spread = max_s - min_s if max_s != min_s else 1.0
+                normalized = [(float(s) - min_s) / spread for s in ce_scores]
+                reranked = [(chunks_only[i], normalized[i]) for i in range(len(chunks_only))]
                 reranked.sort(key=lambda x: x[1], reverse=True)
                 return reranked[:top_k]
             except Exception:
                 pass
 
-        # Feature Scoring Engine fallback
+        # Feature Scoring Engine fallback — all weights sum to 1.0, output ∈ [0, 1]
         query_terms = set(re.findall(r"\w+", query.lower()))
         contract_keywords = {"return", "returns", "raises", "raise", "param", "params", "mutates", "contract", "bcv"}
+
+        # Weights sum to 1.0 → output guaranteed ∈ [0, 1]
+        W_INITIAL = 0.30
+        W_OVERLAP = 0.30
+        W_SIGNATURE = 0.25
+        W_CONTRACT = 0.15
 
         scored_chunks: List[Tuple[CodeChunk, float]] = []
 
@@ -48,21 +61,27 @@ class Reranker:
             content_lower = chunk.content.lower()
             content_terms = set(re.findall(r"\w+", content_lower))
 
-            # 1. Term overlap ratio
+            # Component 1: Initial retrieval score, clamped to [0, 1]
+            clamped_initial = max(0.0, min(1.0, initial_score))
+
+            # Component 2: Term overlap ratio ∈ [0, 1]
             overlap_ratio = len(query_terms.intersection(content_terms)) / (len(query_terms) or 1)
 
-            # 2. Signature & docstring bonus
-            sig_bonus = 0.0
-            if chunk.function_name and chunk.function_name.lower() in query.lower():
-                sig_bonus += 0.35
-            if chunk.docstring and any(t in chunk.docstring.lower() for t in query_terms):
-                sig_bonus += 0.25
+            # Component 3: Signature + docstring match, blended binary ∈ [0, 1]
+            sig_hit = 1.0 if (chunk.function_name and chunk.function_name.lower() in query.lower()) else 0.0
+            doc_hit = 1.0 if (chunk.docstring and any(t in chunk.docstring.lower() for t in query_terms)) else 0.0
+            signature_score = sig_hit * 0.6 + doc_hit * 0.4  # ∈ [0, 1]
 
-            # 3. Behavioral Contract keyword match
-            contract_bonus = 0.2 if any(k in content_lower for k in contract_keywords) else 0.0
+            # Component 4: Contract keyword presence ∈ {0, 1}
+            contract_score = 1.0 if any(k in content_lower for k in contract_keywords) else 0.0
 
-            # Combined score calculation
-            feature_score = (0.35 * initial_score) + (0.35 * overlap_ratio) + sig_bonus + contract_bonus
+            # Weighted sum — guaranteed ∈ [0, 1]
+            feature_score = (
+                W_INITIAL * clamped_initial
+                + W_OVERLAP * overlap_ratio
+                + W_SIGNATURE * signature_score
+                + W_CONTRACT * contract_score
+            )
             scored_chunks.append((chunk, float(feature_score)))
 
         scored_chunks.sort(key=lambda x: x[1], reverse=True)
